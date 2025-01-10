@@ -19,16 +19,12 @@ accelerator = Accelerator()
 
 
 # Paths and repository details
-output_dir = "/cluster/scratch/fraluca/huggingface/models/8B_7000_555134_1736262782"
+output_dir = "/cluster/scratch/fraluca/huggingface/models/REFUEL-8B-eta-1e2_555134_1736275164"
 # output_dir = "/cluster/scratch/fraluca/huggingface/models/8B_7000_1_555134_1735558948"
   # Replace with the path to your saved model directory
 base_model_name = "meta-llama/Llama-3.1-8B-Instruct"  # Replace with the base model name (e.g., bert-base-uncased)
-repo_name = "LuckyLukke/meta-negotio-8B-1"  # Replace with your desired repo name
+repo_name = "LuckyLukke/negotio-8B-REFUEL-2"  # Replace with your desired repo name
 
-config_path = "/cluster/scratch/fraluca/huggingface/models/8B_7000_1_555134_1735558948/config.json"
-with open(config_path, 'r') as f:
-    config = json.load(f)
-print(config)
 
 # Load the model architecture from the base model
 model = AutoModelForCausalLM.from_pretrained(base_model_name)
