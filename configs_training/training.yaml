@@ -1,6 +1,0 @@
-defaults:
-  - _self_
-  - experiment: 8B_REFUEL_3.yaml
-
-
-
