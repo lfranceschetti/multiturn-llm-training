@@ -172,6 +172,9 @@ class RefuelTrainer(Trainer):
         reg_diff = ratio_logprob - self.args.refuel.eta * (data["chosen_reward"] - data["reject_reward"])
         loss = (reg_diff ** 2).mean()
 
+        if self.args.refuel.nll_term:
+            loss = loss + (self.args.refuel.nll_weight * -new_logprobs[:len(new_logprobs) // 2].mean() / self.args.task.total_length)
+
         if return_sign_align:
             sign_align = (ratio_logprob > 0).float().mean().reshape(1)
             loss = torch.tensor(loss, device=loss.device)

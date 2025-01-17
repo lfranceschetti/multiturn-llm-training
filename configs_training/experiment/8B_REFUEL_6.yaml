@@ -42,6 +42,6 @@ refuel:
   num_updates: 100
   whiten_rewards: false
   shift_mean: false
-  eta: 1000
+  eta: 10000
   nll_term: true
-  alpha: 1.0
+  nll_weight: 1.0
