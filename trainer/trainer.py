@@ -125,47 +125,59 @@ class Trainer:
 
         return dataset, validation_dataset
     
-
     def compute_logprobs(self, policy, tokenizer, data, device):
-        results = []
-        for token_key, mask_key in [("chosen_token", "chosen_mask"), ("reject_token", "reject_mask")]:
-            tokens = data[token_key].to(device)
-            masks = data[mask_key].to(device)
+            results = []
+            for token_key, mask_key in [("chosen_token", "chosen_mask"), ("reject_token", "reject_mask")]:
+                tokens = data[token_key].to(device)
+                masks = data[mask_key].to(device)
 
-            attention_mask = tokens != tokenizer.pad_token_id
-            input_ids = torch.masked_fill(tokens, ~attention_mask, tokenizer.eos_token_id)
+                attention_mask = tokens != tokenizer.pad_token_id
 
-            validate_inputs(input_ids, attention_mask)
+                #Replacing padding tokens with eos_token_id ensures that the model treats padding as if it has reached the end of the sequence
+                input_ids = torch.masked_fill(tokens, ~attention_mask, tokenizer.eos_token_id)
 
-        
-            output = policy(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                return_dict=True,
-                output_hidden_states=False,
-            )
+                validate_inputs(input_ids, attention_mask)
 
-            logits = output.logits[:, :-1]
-            logits /= self.args.task.temperature + 1e-7
-            all_logprobs = F.log_softmax(logits, dim=-1)
-            logprobs = torch.gather(all_logprobs, 2, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
-            logprobs = (logprobs * masks[:, 1:]).sum(-1)
+            
+                output = policy(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    return_dict=True,
+                    output_hidden_states=False,
+                )
+                #The output.logits contains the unnormalized scores (logits) for each token.
+                #Removes the logits corresponding to the last token in each sequence
+                logits = output.logits[:, :-1]
+                logits /= self.args.task.temperature + 1e-7
 
-            # Detach and delete tensors to free memory
-            del output, all_logprobs, logits, attention_mask, tokens, masks, input_ids
-            torch.cuda.empty_cache()
+                #all_logprobs contains the log-probabilities for every token in the vocabulary for each position in the sequence.
+                #has the shape (batch_size, sequence_length - 1, vocab_size)
+                all_logprobs = F.log_softmax(logits, dim=-1)
+                #extract the log-probabilities of the actual target tokens for each position in the sequence
+                #logprrobs afterwards has shape (batch_size, sequence_length - 1)
+                logprobs = torch.gather(all_logprobs, 2, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
 
-            results.append(logprobs)
-        return torch.cat(results, dim=0)
+                #Sets logprobs to 0 for padding tokens and sums the log-probabilities for each position in the sequence
+                logprobs = logprobs * masks[:, 1:]
+                #Resulting shape: (batch_size)
+                logprobs = logprobs.sum(-1)
+
+                # Detach and delete tensors to free memory
+                del output, all_logprobs, logits, attention_mask, tokens, masks, input_ids
+                torch.cuda.empty_cache()
+
+                results.append(logprobs)
+            return torch.cat(results, dim=0)
+
     
     @abstractmethod
-    def calculate_loss(self, new_logprobs, old_logprobs, data, return_sign_align=False):
+    def calculate_loss(self, new_logprobs, old_logprobs, data):
         pass
 
 
 class RefuelTrainer(Trainer):
     """Implementation of Trainer for Refuel algorithm."""
-    def calculate_loss(self, new_logprobs, old_logprobs, data, return_sign_align=False):
+    def calculate_loss(self, new_logprobs, old_logprobs, data):
         ratio_logprob = new_logprobs - old_logprobs
         ratio_logprob = ratio_logprob[:len(new_logprobs) // 2] - ratio_logprob[len(new_logprobs) // 2:]
 
@@ -175,11 +187,34 @@ class RefuelTrainer(Trainer):
         if self.args.refuel.nll_term:
             loss = loss + (self.args.refuel.nll_weight * -new_logprobs[:len(new_logprobs) // 2].mean() / self.args.task.total_length)
 
-        if return_sign_align:
-            sign_align = (ratio_logprob > 0).float().mean().reshape(1)
-            loss = torch.tensor(loss, device=loss.device)
-            return loss, sign_align
-        
+  
         return loss
 
 
+
+class DPOTrainer(Trainer):
+
+
+
+    
+    """Implementation of Trainer for DPO algorithm."""
+    def calculate_loss(self, new_logprobs, old_logprobs, data):
+        # Separate chosen and rejected log probabilities
+        pi_w = new_logprobs[:len(new_logprobs) // 2]
+        pi_l = new_logprobs[len(new_logprobs) // 2:]
+        pi_ref_w = old_logprobs[:len(old_logprobs) // 2]
+        pi_ref_l = old_logprobs[len(old_logprobs) // 2:]
+
+        # Compute log ratio for chosen and rejected trajectories
+        log_ratio_chosen = pi_w - pi_ref_w
+        log_ratio_rejected = pi_l - pi_ref_l
+
+        # Compute the sigmoid term
+        beta = self.args.dpo.beta
+        sigmoid_arg = beta * (log_ratio_chosen - log_ratio_rejected)
+        sigmoid = torch.sigmoid(sigmoid_arg)
+
+        # Compute the DPO loss
+        loss = -torch.log(sigmoid).mean()
+
+        return loss
