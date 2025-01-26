@@ -1,0 +1,47 @@
+
+exp_name: "REFUEL-onesided-eta1e3"
+training_method: REFUEL
+seed: 555134
+track: true
+wandb_project_name: "multiturn_largebatch"
+run_name: null
+print_sample_output_freq: 500
+
+# Optimizer settings
+eps: 1e-8
+lr: 3e-7
+weight_decay: 1e-6
+optimizer: "adamw"
+warmup_ratio: 0.1
+start_idx: 0
+end_idx: -1
+
+gradient_accumulation_steps: 1
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 16
+total_episodes: 15000
+
+# Optional runtime settings
+world_size: 1
+batch_size: null
+local_batch_size: null
+
+# Model paths
+base_model: "/cluster/scratch/fraluca/huggingface/models/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659"
+output_dir: "/cluster/scratch/fraluca/huggingface/models/"
+
+# Task-specific settings
+task:
+  query_dataset: "LuckyLukke/negotio_REFUEL_onesided_preprocessed"
+  cluster: ""
+  total_length: 2048
+  temperature: 0.9
+
+# REFUEL-specific settings
+refuel:
+  num_updates: 100
+  whiten_rewards: false
+  shift_mean: false
+  eta: 1000
+  nll_term: False
+  alpha: null
