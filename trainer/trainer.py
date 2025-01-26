@@ -16,7 +16,7 @@ from trainer.utils import disable_dropout_in_model, get_cosine_schedule_with_war
 from attr import define, field
 from accelerate import Accelerator
 from abc import abstractmethod
-
+from tqdm import tqdm
 
 def validate_inputs(input_ids, attention_mask):
     assert input_ids is not None, "Input IDs tensor is None."
@@ -78,6 +78,7 @@ class Trainer:
     
     def add_original_logprobs_to_datasets(self, dataset, validation_dataset, accelerator, policy, tokenizer, batch_size=4, chunk_size=4):
 
+        print("Adding original logprobs to dataset...")
         device = accelerator.device
 
         def process_and_update(dataset, chunk_size):
@@ -85,7 +86,7 @@ class Trainer:
             updated_dataset = []
 
             with torch.no_grad():
-                for i in range(num_chunks):
+                for i in tqdm(range(num_chunks)):
                     start_idx = i * chunk_size
                     end_idx = min((i + 1) * chunk_size, len(dataset))
 
@@ -194,8 +195,6 @@ class RefuelTrainer(Trainer):
 
 class DPOTrainer(Trainer):
 
-
-
     
     """Implementation of Trainer for DPO algorithm."""
     def calculate_loss(self, new_logprobs, old_logprobs, data):
@@ -212,6 +211,10 @@ class DPOTrainer(Trainer):
         # Compute the sigmoid term
         beta = self.args.dpo.beta
         sigmoid_arg = beta * (log_ratio_chosen - log_ratio_rejected)
+
+        if self.args.dpo.with_offset:
+            sigmoid_arg = sigmoid_arg - (data["chosen_reward"] - data["reject_reward"])
+
         sigmoid = torch.sigmoid(sigmoid_arg)
 
         # Compute the DPO loss
