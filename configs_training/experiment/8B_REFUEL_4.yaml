@@ -39,7 +39,6 @@ task:
 
 # REFUEL-specific settings
 refuel:
-  num_updates: 100
   whiten_rewards: false
   shift_mean: false
   eta: 1000

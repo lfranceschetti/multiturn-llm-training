@@ -49,10 +49,10 @@ class Trainer:
             accelerator.state.deepspeed_plugin is None
             or "scheduler" not in accelerator.state.deepspeed_plugin.deepspeed_config
         ):
-            scheduler = get_cosine_schedule_with_warmup(optimizer, int(self.args.refuel.num_updates * self.args.warmup_ratio * self.args.world_size), self.args.refuel.num_updates * self.args.world_size)
+            scheduler = get_cosine_schedule_with_warmup(optimizer, int(self.args.num_updates * self.args.warmup_ratio * self.args.world_size), self.args.num_updates * self.args.world_size)
         else:
             scheduler = DummyScheduler(
-            optimizer, total_num_steps=self.args.refuel.num_updates * self.args.world_size, warmup_num_steps=int(self.args.refuel.num_updates * self.args.warmup_ratio * self.args.world_size))
+            optimizer, total_num_steps=self.args.num_updates * self.args.world_size, warmup_num_steps=int(self.args.num_updates * self.args.warmup_ratio * self.args.world_size))
         return scheduler
 
     def setup_model(self):
