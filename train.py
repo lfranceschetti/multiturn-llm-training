@@ -11,8 +11,11 @@ from tqdm import tqdm
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 from helpers.logger import WandbLogger, log_initial_info
 from itertools import cycle
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, OmegaConf, open_dict
+from huggingface_hub import HfApi, login
+
 import json
+import copy
 import hydra
 from trainer.dataloader import load_datasets
 from trainer.trainer import RefuelTrainer, DPOTrainer
@@ -34,12 +37,45 @@ def set_arguments(args, num_processes):
 
     args.batch_size = args.world_size * args.local_batch_size
 
-    #Open question: What is whitening?
-    if args.refuel.whiten_rewards:
-        assert (args.local_batch_size >= 8), f"Per-rank minibatch size {args.local_batch_size} is insufficient for whitening"
-
-    args.refuel.num_updates = args.total_episodes // args.batch_size
+    with open_dict(args):  # Temporarily allow adding attributes
+        args.num_updates = args.total_episodes // args.batch_size
     return args
+
+
+
+def upload_to_hf(args, model, tokenizer, accelerator, checkpoint=None):
+
+    if accelerator.is_main_process:
+
+
+        # Extract W&B API key
+        hf_token = os.getenv("HF_TOKEN")
+        login(hf_token)
+
+        api = HfApi()
+        user_info = api.whoami(token=hf_token)
+        hf_username = user_info["name"]
+
+        name = f"{hf_username}/{args.exp_name}"
+
+        if checkpoint:
+            name += f"-{checkpoint}"
+
+
+        print(f"Uploading model and tokenizer to Hugging Face Hub under {name}...")
+
+        # Create a deep copy of the model
+        upload_model = copy.deepcopy(model.module if hasattr(model, "module") else model)
+
+        # Convert the copied model to float16 and move it to CPU
+        upload_model = upload_model.to(torch.float16).cpu()
+
+        # Push the model and tokenizer to the Hugging Face Hub
+        upload_model.push_to_hub(name, use_auth_token=hf_token)
+        tokenizer.push_to_hub(name, use_auth_token=hf_token)
+
+        print(f"Checkpoint {name} successfully uploaded to Hugging Face Hub.")
+
 
 
 
@@ -110,10 +146,10 @@ def main(cfg: DictConfig):
     training_loss = []
     training_chosen_logprobs = []
     training_reject_logprobs = []
-    for update in tqdm(range(1, args.refuel.num_updates + 1), disable= not accelerator.is_main_process):
+    for update in tqdm(range(1, args.num_updates + 1), disable= not accelerator.is_main_process):
 
         # VALIDATION
-        if (update - 1) % args.print_sample_output_freq == 0 or update == args.refuel.num_updates:
+        if (update - 1) % args.print_sample_output_freq == 0 or update == args.num_updates:
             if accelerator.is_main_process:
                 print(f"STARTING VALIDATION at update {update}")
             policy.eval()
@@ -174,17 +210,17 @@ def main(cfg: DictConfig):
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+
+
+        #Upload the model at specified intervals
+        if update % args.upload_interval == 0:
+            upload_to_hf(args, policy, tokenizer, accelerator, checkpoint=update)
         
         torch.cuda.empty_cache()
 
-    
+    upload_to_hf(args, policy, tokenizer, accelerator)
 
-    if args.output_dir:
-        accelerator.wait_for_everyone()
-        output_dir = os.path.join(args.output_dir, wandb_logger.run_name)
-        os.makedirs(os.path.dirname(output_dir), exist_ok=True)
-        accelerator.save_state(output_dir=output_dir)
-        accelerator.wait_for_everyone()
+   
     wandb_logger.finalize()
     torch.cuda.empty_cache()
 
