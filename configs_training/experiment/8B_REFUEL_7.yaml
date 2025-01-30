@@ -6,7 +6,7 @@ track: true
 wandb_project_name: "multiturn_largebatch"
 run_name: null
 print_sample_output_freq: 500
-upload_interval: 5000
+upload_interval: 2500
 
 
 # Optimizer settings
