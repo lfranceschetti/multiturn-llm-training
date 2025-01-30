@@ -1,12 +1,12 @@
 
-exp_name: "REFUEL-onesided-eta1e4"
+exp_name: "REFUEL-onesided-beta-0.1"
 training_method: REFUEL
 seed: 555134
 track: true
 wandb_project_name: "multiturn_largebatch"
 run_name: null
 print_sample_output_freq: 500
-upload_interval: 2500
+upload_interval: 1250
 
 # Optimizer settings
 eps: 1e-8
@@ -28,8 +28,7 @@ batch_size: null
 local_batch_size: null
 
 # Model paths
-base_model: "/cluster/scratch/fraluca/huggingface/models/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659"
-output_dir: "/cluster/scratch/fraluca/huggingface/models/"
+base_model: "meta-llama/Llama-3.1-8B-Instruct"
 
 # Task-specific settings
 task:
@@ -42,6 +41,7 @@ task:
 refuel:
   whiten_rewards: false
   shift_mean: false
-  eta: 10000
+  eta: null
+  beta: 0.1
   nll_term: False
   alpha: null

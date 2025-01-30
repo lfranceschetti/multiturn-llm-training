@@ -28,7 +28,7 @@ batch_size: null
 local_batch_size: null
 
 # Model paths
-base_model: "/cluster/scratch/fraluca/huggingface/models/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659"
+base_model: "meta-llama/Llama-3.1-8B-Instruct"
 output_dir: "/cluster/scratch/fraluca/huggingface/models/"
 
 # Task-specific settings
