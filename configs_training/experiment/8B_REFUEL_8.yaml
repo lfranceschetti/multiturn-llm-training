@@ -5,7 +5,8 @@ seed: 555134
 track: true
 wandb_project_name: "multiturn_largebatch"
 run_name: null
-print_sample_output_freq: 750
+print_sample_output_freq: 500
+upload_interval: 2500
 
 # Optimizer settings
 eps: 1e-8
@@ -19,7 +20,7 @@ end_idx: -1
 gradient_accumulation_steps: 1
 per_device_train_batch_size: 1
 per_device_eval_batch_size: 16
-total_episodes: 14896
+total_episodes: 15000
 
 # Optional runtime settings
 world_size: 1
