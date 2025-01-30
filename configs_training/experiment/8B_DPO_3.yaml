@@ -10,7 +10,7 @@ upload_interval: 2500
 
 # Optimizer settings
 eps: 1e-8
-lr: 3e-7
+lr: 3e-6
 weight_decay: 1e-6
 optimizer: "adamw"
 warmup_ratio: 0.1

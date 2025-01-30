@@ -1,9 +1,10 @@
 
-exp_name: "DPO_1"
+exp_name: "DPO_test"
 training_method: DPO
 seed: 555134
 track: true
 wandb_project_name: "multiturn_largebatch"
+wandb_dir: "./wandb"
 run_name: null
 print_sample_output_freq: 500
 upload_interval: 2500
@@ -28,7 +29,7 @@ batch_size: null
 local_batch_size: null
 
 # Model paths
-base_model: "/cluster/scratch/fraluca/huggingface/models/models--meta-llama--Llama-3.1-8B-Instruct/snapshots/0e9e39f249a16976918f6564b8830bc894c89659"
+base_model: "meta-llama/Llama-3.2-3B-Instruct"
 output_dir: "/cluster/scratch/fraluca/huggingface/models/"
 
 # Task-specific settings
