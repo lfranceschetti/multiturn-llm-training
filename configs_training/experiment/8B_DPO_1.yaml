@@ -1,12 +1,12 @@
 
-exp_name: "DPO_1"
+exp_name: "DPO_1_1"
 training_method: DPO
 seed: 555134
 track: true
 wandb_project_name: "multiturn_largebatch"
 run_name: null
 print_sample_output_freq: 500
-upload_interval: 2500
+upload_interval: 1250
 
 # Optimizer settings
 eps: 1e-8
