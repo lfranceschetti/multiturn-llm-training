@@ -4,6 +4,7 @@ training_method: REFUEL
 seed: 555134
 track: true
 wandb_project_name: "multiturn_largebatch"
+wandb_dir: null
 run_name: null
 print_sample_output_freq: 500
 upload_interval: 1250
