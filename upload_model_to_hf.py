@@ -19,10 +19,10 @@ accelerator = Accelerator()
 
 
 # Paths and repository details
-output_dir = "/cluster/scratch/fraluca/huggingface/models/REFUEL-8B-onesided-eta1e4_555134_1736769129"
+output_dir = "/cluster/scratch/fraluca/huggingface/models/REFUEL-1B-test-2"
   # Replace with the path to your saved model directory
-base_model_name = "meta-llama/Llama-3.1-8B-Instruct"  # Replace with the base model name (e.g., bert-base-uncased)
-repo_name = "LuckyLukke/negotio-8B-REFUEL-5"  # Replace with your desired repo name
+base_model_name = "meta-llama/Llama-3.2-1B-Instruct"  # Replace with the base model name (e.g., bert-base-uncased)
+repo_name = "LuckyLukke/REFUEL-1B-test-2"  # Replace with your desired repo name
 
 
 # Load the model architecture from the base model
