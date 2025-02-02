@@ -13,11 +13,13 @@ from helpers.logger import WandbLogger, log_initial_info
 from itertools import cycle
 from omegaconf import DictConfig, OmegaConf, open_dict
 from huggingface_hub import HfApi, login
+from deepspeed.utils.zero_to_fp32 import get_fp32_state_dict_from_zero_checkpoint
 
 import json
 import copy
 import hydra
 from trainer.dataloader import load_datasets
+
 from trainer.trainer import RefuelTrainer, DPOTrainer
 
 torch.set_printoptions(threshold=10_000)
@@ -45,36 +47,72 @@ def set_arguments(args, num_processes):
 
 def upload_to_hf(args, model, tokenizer, accelerator, checkpoint=None):
 
-    if accelerator.is_main_process:
+    accelerator.wait_for_everyone()
 
 
-        # Extract W&B API key
-        hf_token = os.getenv("HF_TOKEN")
-        login(hf_token)
-
-        api = HfApi()
-        user_info = api.whoami(token=hf_token)
-        hf_username = user_info["name"]
-
-        name = f"{hf_username}/{args.exp_name}"
-
-        if checkpoint:
-            name += f"-{checkpoint}"
+    model_save_dir = os.path.join(args.output_dir, f"{args.exp_name}")
 
 
-        print(f"Uploading model and tokenizer to Hugging Face Hub under {name}...")
+    if checkpoint is not None:
+        model_save_dir += f"-{checkpoint}"
 
-        # Create a deep copy of the model
-        upload_model = copy.deepcopy(model.module if hasattr(model, "module") else model)
+    os.makedirs(model_save_dir, exist_ok=True)
 
-        # Convert the copied model to float16 and move it to CPU
-        upload_model = upload_model.to(torch.float16).cpu()
+        
+    accelerator.save_state(output_dir=model_save_dir)
 
-        # Push the model and tokenizer to the Hugging Face Hub
-        upload_model.push_to_hub(name, use_auth_token=hf_token)
-        tokenizer.push_to_hub(name, use_auth_token=hf_token)
+    # https://huggingface.co/docs/accelerate/usage_guides/deepspeed#saving-and-loading
 
-        print(f"Checkpoint {name} successfully uploaded to Hugging Face Hub.")
+    # unwrapped_model = accelerator.unwrap_model(model)
+
+    # fp32_model = load_state_dict_from_zero_checkpoint(unwrapped_model, checkpoint_dir)
+
+
+
+    accelerator.wait_for_everyone()
+
+
+
+        # print(f"Saving pretrained model to {model_save_dir}")
+        # model_to_save = accelerator.unwrap_model(model)
+        # state_dict = accelerator.get_state_dict(model)
+        # model_to_save.save_pretrained(model_save_dir, safe_serialization=True, save_function=accelerator.save, state_dict=state_dict)
+        # tokenizer.save_pretrained(model_save_dir)
+
+        # print("Model successfully saved")
+
+
+        # if checkpoint is None:
+
+        #     # Extract W&B API key
+        #     hf_token = os.getenv("HF_TOKEN")
+        #     login(hf_token)
+
+        #     api = HfApi()
+        #     user_info = api.whoami(token=hf_token)
+        #     hf_username = user_info["name"]
+
+        #     name = f"{hf_username}/{args.exp_name}"
+
+        #     print(f"Uploading model and tokenizer to Hugging Face Hub under {name}...")
+
+        #     tokenizer.push_to_hub(name)
+        #     model_to_save.push_to_hub(name)
+
+        #     print(f"Checkpoint {name} successfully uploaded to Hugging Face Hub.")
+
+
+
+
+
+
+    
+
+
+
+
+
+
 
 
 

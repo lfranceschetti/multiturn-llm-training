@@ -21,5 +21,5 @@ export HF_TOKEN="***REMOVED***"
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 
-accelerate launch --config_file=/cluster/home/fraluca/.cache/huggingface/accelerate/default_config.yaml --main_process_port=29501 train.py --config-name 8B_DPO_2
+accelerate launch --config_file=/cluster/home/fraluca/.cache/huggingface/accelerate/default_config.yaml --main_process_port=29501 train.py --config-name 8B_DPO_1
  
