@@ -20,7 +20,7 @@ import copy
 import hydra
 from trainer.dataloader import load_datasets
 
-from trainer.trainer import RefuelTrainer, DPOTrainer
+from trainer.trainer import RefuelTrainer, DPOTrainer, GRPOTrainer
 
 torch.set_printoptions(threshold=10_000)
 
@@ -135,6 +135,9 @@ def main(cfg: DictConfig):
         trainer = RefuelTrainer(args=args)
     elif args.training_method == "DPO":
         trainer = DPOTrainer(args=args)
+    elif args.training_method == "GRPO":
+        trainer = GRPOTrainer(args=args)
+    
 
     #Cudnn will us deterministic algorithms, which means that the model will always produce the same output for the same input but it may slow down the training
     torch.backends.cudnn.deterministic = True
@@ -197,7 +200,7 @@ def main(cfg: DictConfig):
             with torch.no_grad():
                 for data in tqdm(validation_dataloader, disable= not accelerator.is_main_process):
                     new_logprobs = trainer.compute_logprobs(policy, tokenizer, data, device)
-                    old_logprobs = torch.cat((data["chosen_logprob"], data["reject_logprob"]), dim=0)
+                    old_logprobs = trainer.get_reference_logprobs(data)
                     loss = trainer.calculate_loss(new_logprobs, old_logprobs, data)
                     loss = torch.tensor(loss, device=device)
                     loss_list.append(loss)
@@ -231,7 +234,7 @@ def main(cfg: DictConfig):
             data = {key: value.to(device) for key, value in data.items() if isinstance(value, torch.Tensor)}
 
             new_logprobs = trainer.compute_logprobs(policy, tokenizer, data, device)
-            old_logprobs = torch.cat((data["chosen_logprob"], data["reject_logprob"]), dim=0)
+            old_logprobs = trainer.get_reference_logprobs(data)
 
             loss = trainer.calculate_loss(new_logprobs, old_logprobs, data)
 
