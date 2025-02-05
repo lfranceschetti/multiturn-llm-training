@@ -5,6 +5,7 @@ seed: 555134
 track: true
 wandb_project_name: "multiturn_largebatch"
 run_name: null
+wandb_dir: null
 print_sample_output_freq: 500
 upload_interval: 1250
 
