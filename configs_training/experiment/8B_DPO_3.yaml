@@ -5,8 +5,9 @@ seed: 555134
 track: true
 wandb_project_name: "multiturn_largebatch"
 run_name: null
+wandb_dir: null
 print_sample_output_freq: 500
-upload_interval: 2500
+upload_interval: 1250
 
 # Optimizer settings
 eps: 1e-8
@@ -33,7 +34,7 @@ output_dir: "/cluster/scratch/fraluca/huggingface/models/"
 
 # Task-specific settings
 task:
-  query_dataset: "LuckyLukke/negotio_REFUEL_onesided_preprocessed"
+  query_dataset: "LuckyLukke/negotio_DPO_onesided_preprocessed"
   cluster: ""
   total_length: 2048
   temperature: 0.9
