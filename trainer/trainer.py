@@ -30,6 +30,15 @@ def validate_inputs(input_ids, attention_mask):
 class Trainer:
     args: DictConfig
 
+    def __init__(self, args: DictConfig):
+        self.args = args
+        self.token_keys = ["chosen_token", "reject_token"]
+        self.mask_keys = ["chosen_mask", "reject_mask"]
+        self.reference_logprob_keys = ["chosen_logprob", "reject_logprob"]
+        self.tokenized_logprobs = getattr(args, "tokenized_logprobs", False)
+
+
+
     def setup_optimizer(self, accelerator: Accelerator, policy: nn.Module) -> Union[torch.optim.Optimizer, DummyOptim]:
         print("Setting up optimizer...")
         optimizer_cls = (
@@ -128,7 +137,10 @@ class Trainer:
     
     def compute_logprobs(self, policy, tokenizer, data, device):
             results = []
-            for token_key, mask_key in [("chosen_token", "chosen_mask"), ("reject_token", "reject_mask")]:
+
+            assert len(self.token_keys) == len(self.mask_keys), "Number of token_keys and mask_keys should be the same."
+            
+            for token_key, mask_key in zip(self.token_keys, self.mask_keys):
                 tokens = data[token_key].to(device)
                 masks = data[mask_key].to(device)
 
@@ -152,23 +164,40 @@ class Trainer:
                 logits /= self.args.task.temperature + 1e-7
 
                 #all_logprobs contains the log-probabilities for every token in the vocabulary for each position in the sequence.
-                #has the shape (batch_size, sequence_length - 1, vocab_size)
+                #has the shape (B, L-1, V)
                 all_logprobs = F.log_softmax(logits, dim=-1)
                 #extract the log-probabilities of the actual target tokens for each position in the sequence
-                #logprrobs afterwards has shape (batch_size, sequence_length - 1)
+                #logprrobs afterwards has shape (B, L-1)
                 logprobs = torch.gather(all_logprobs, 2, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
 
                 #Sets logprobs to 0 for padding tokens and sums the log-probabilities for each position in the sequence
                 logprobs = logprobs * masks[:, 1:]
-                #Resulting shape: (batch_size)
-                logprobs = logprobs.sum(-1)
+
+                if self.tokenized_logprobs:
+                    #Resulting shape: (B, L-1)
+                    pass
+                else:
+                    #Resulting shape: (B)
+                    logprobs = logprobs.sum(-1)
 
                 # Detach and delete tensors to free memory
                 del output, all_logprobs, logits, attention_mask, tokens, masks, input_ids
                 torch.cuda.empty_cache()
 
                 results.append(logprobs)
+
+            #Resulting shape: (N*B) if tokenized_logprobs is False, else (N*B, L-1)
             return torch.cat(results, dim=0)
+    
+    def get_reference_logprobs(self, data):
+        results = []
+        for key in self.reference_logprob_keys:
+            results.append(data[key])
+
+        #Resulting shape: (N*B) if a number is stored in each key, else (N*B, L-1)
+        return torch.cat(results, dim=0)
+            
+
 
     
     @abstractmethod
@@ -227,3 +256,22 @@ class DPOTrainer(Trainer):
         loss = -torch.log(sigmoid).mean()
 
         return loss
+
+
+
+class GRPOTrainer(Trainer):
+
+
+    def __init__(self, args: DictConfig):
+        self.args = args
+        self.token_keys =  ["token"]
+        self.mask_keys =  ["mask"]
+        self.reference_logprob_keys = ["logprob"]
+        self.tokenized_logprobs = True
+
+
+    
+    """Implementation of Trainer for GRPO algorithm."""
+    def calculate_loss(self, new_logprobs, old_logprobs, data):
+        # Separate chosen and rejected log probabilities
+        pass
