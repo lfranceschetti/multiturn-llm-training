@@ -6,8 +6,6 @@ import torch
 import json
 
 # Replace with your Hugging Face token
-HF_TOKEN = "***REMOVED***"
-login(HF_TOKEN)
 
 # Initialize accelerator
 
@@ -19,27 +17,43 @@ accelerator = Accelerator()
 
 
 # Paths and repository details
-output_dir = "/cluster/scratch/fraluca/huggingface/models/REFUEL-1B-test-2"
+output_dir = "/cluster/scratch/mgiulianelli/huggingface/models/REFUEL-onesided-beta-0.01-1250"
+
+names = [
+  "REFUEL-onesided-beta-0.01-1250",
+  "REFUEL-onesided-beta-0.01-2500",
+  "REFUEL-onesided-beta-0.01-3750",
+  "REFUEL-onesided-beta-0.1-1250",
+  "REFUEL-onesided-beta-0.1-2500",
+  "REFUEL-onesided-beta-0.1-3750",
+  "REFUEL-onesided-beta-0.1-5000"
+]
+
+
+for name in names:
   # Replace with the path to your saved model directory
-base_model_name = "meta-llama/Llama-3.2-1B-Instruct"  # Replace with the base model name (e.g., bert-base-uncased)
-repo_name = "LuckyLukke/REFUEL-1B-test-2"  # Replace with your desired repo name
+
+  
+  output_dir = "/cluster/scratch/mgiulianelli/huggingface/models/" + name
+  base_model_name = "meta-llama/Llama-3.1-8B-Instruct"  # Replace with the base model name (e.g., bert-base-uncased)
+  repo_name = "LuckyLukke/" + name
 
 
-# Load the model architecture from the base model
-model = AutoModelForCausalLM.from_pretrained(base_model_name)
+  # Load the model architecture from the base model
+  model = AutoModelForCausalLM.from_pretrained(base_model_name)
 
-# Load the training state
-accelerator.load_state(output_dir)
+  # Load the training state
+  accelerator.load_state(output_dir)
 
-# Unwrap the model from the accelerator
-model = accelerator.unwrap_model(model)
+  # Unwrap the model from the accelerator
+  model = accelerator.unwrap_model(model)
 
 
 
-tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-model = model.to(torch.float16)
-model.push_to_hub(repo_name)
-tokenizer.push_to_hub(repo_name)
+  tokenizer = AutoTokenizer.from_pretrained(base_model_name)
+  model = model.to(torch.float16)
+  model.push_to_hub(repo_name)
+  tokenizer.push_to_hub(repo_name)
 
-print(f"Model successfully uploaded to https://huggingface.co/{repo_name}")
+  print(f"Model successfully uploaded to https://huggingface.co/{repo_name}")
 
