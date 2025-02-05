@@ -1,10 +1,11 @@
 
-exp_name: "DPO_1_1"
+exp_name: "DPO_1_2"
 training_method: DPO
 seed: 555134
 track: true
 wandb_project_name: "multiturn_largebatch"
 run_name: null
+wandb_dir: null
 print_sample_output_freq: 500
 upload_interval: 1250
 
@@ -33,7 +34,7 @@ output_dir: "/cluster/scratch/fraluca/huggingface/models/"
 
 # Task-specific settings
 task:
-  query_dataset: "LuckyLukke/negotio_REFUEL_onesided_preprocessed"
+  query_dataset: "LuckyLukke/negotio_DPO_onesided_preprocessed"
   cluster: ""
   total_length: 2048
   temperature: 0.9
