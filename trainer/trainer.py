@@ -106,15 +106,16 @@ class Trainer:
                     for batch in dataloader:
                         batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
                         logprobs = self.compute_logprobs(accelerator.unwrap_model(policy), tokenizer, batch, device)
+                        logprobs = logprobs.detach().cpu().float().tolist()
+
                         all_logprobs.extend(logprobs)
                         torch.cuda.empty_cache()
 
                     # Update chunk with logprobs
-                    chosen_logprobs = [float(x.cpu().item()) for x in all_logprobs[: len(chunk)]]
-                    reject_logprobs = [float(x.cpu().item()) for x in all_logprobs[len(chunk):]]
-
-                    chunk = chunk.add_column("chosen_logprob", chosen_logprobs)
-                    chunk = chunk.add_column("reject_logprob", reject_logprobs)
+                    for i, logprob_key in enumerate(self.reference_logprob_keys):
+                        log_probs = all_logprobs[i * len(chunk) : (i + 1) * len(chunk)]
+                        chunk = chunk.add_column(logprob_key, log_probs)
+                  
                     updated_dataset.append(chunk)
 
             return updated_dataset
@@ -150,7 +151,6 @@ class Trainer:
                 input_ids = torch.masked_fill(tokens, ~attention_mask, tokenizer.eos_token_id)
 
                 validate_inputs(input_ids, attention_mask)
-
             
                 output = policy(
                     input_ids=input_ids,
@@ -161,7 +161,9 @@ class Trainer:
                 #The output.logits contains the unnormalized scores (logits) for each token.
                 #Removes the logits corresponding to the last token in each sequence
                 logits = output.logits[:, :-1]
-                logits /= self.args.task.temperature + 1e-7
+                if self.args.task.temperature:
+                    logits /= self.args.task.temperature + 1e-7
+                
 
                 #all_logprobs contains the log-probabilities for every token in the vocabulary for each position in the sequence.
                 #has the shape (B, L-1, V)
@@ -170,7 +172,7 @@ class Trainer:
                 #logprrobs afterwards has shape (B, L-1)
                 logprobs = torch.gather(all_logprobs, 2, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
 
-                #Sets logprobs to 0 for padding tokens and sums the log-probabilities for each position in the sequence
+                #Sets logprobs to 0 for tokens we want to ignore. Masks was originally (B, L). To match (B, L-1) in logprobs, you need masks[:, 1:]
                 logprobs = logprobs * masks[:, 1:]
 
                 if self.tokenized_logprobs:
@@ -188,6 +190,9 @@ class Trainer:
 
             #Resulting shape: (N*B) if tokenized_logprobs is False, else (N*B, L-1)
             return torch.cat(results, dim=0)
+    
+
+
     
     def get_reference_logprobs(self, data):
         results = []
@@ -233,23 +238,25 @@ class DPOTrainer(Trainer):
     
     """Implementation of Trainer for DPO algorithm."""
     def calculate_loss(self, new_logprobs, old_logprobs, data):
-        # Separate chosen and rejected log probabilities
-        pi_w = new_logprobs[:len(new_logprobs) // 2]
-        pi_l = new_logprobs[len(new_logprobs) // 2:]
-        pi_ref_w = old_logprobs[:len(old_logprobs) // 2]
-        pi_ref_l = old_logprobs[len(old_logprobs) // 2:]
+        # Separate chosen (winning) and rejected (losing) log probabilities
+        pi_w = new_logprobs[:len(new_logprobs) // 2]      # π*(a^w | s^w)
+        pi_l = new_logprobs[len(new_logprobs) // 2:]      # π*(a^l | s^l)
+        pi_ref_w = old_logprobs[:len(old_logprobs) // 2]  # π_ref(a^w | s^w)
+        pi_ref_l = old_logprobs[len(old_logprobs) // 2:]  # π_ref(a^l | s^l)
 
-        # Compute log ratio for chosen and rejected trajectories
-        log_ratio_chosen = pi_w - pi_ref_w
-        log_ratio_rejected = pi_l - pi_ref_l
+        # Compute log ratios for chosen (winning) and rejected (losing) trajectories
+        log_ratio_chosen = pi_w - pi_ref_w  # log(π*(a^w | s^w) / π_ref(a^w | s^w))
+        log_ratio_rejected = pi_l - pi_ref_l  # log(π*(a^l | s^l) / π_ref(a^l | s^l))
 
-        # Compute the sigmoid term
+        # Compute the argument for the sigmoid function
         beta = self.args.dpo.beta
-        sigmoid_arg = beta * (log_ratio_chosen - log_ratio_rejected)
+        sigmoid_arg = beta * (log_ratio_chosen.sum() - log_ratio_rejected.sum())
 
+        # Optional offset adjustment
         if self.args.dpo.with_offset:
             sigmoid_arg = sigmoid_arg - (data["chosen_reward"] - data["reject_reward"])
 
+        # Apply the sigmoid function
         sigmoid = torch.sigmoid(sigmoid_arg)
 
         # Compute the DPO loss
@@ -259,12 +266,14 @@ class DPOTrainer(Trainer):
 
 
 
+
 class GRPOTrainer(Trainer):
 
 
     def __init__(self, args: DictConfig):
         self.args = args
         self.token_keys =  ["token"]
+        self.reward_key = "payoff"
         self.mask_keys =  ["mask"]
         self.reference_logprob_keys = ["logprob"]
         self.tokenized_logprobs = True
@@ -272,6 +281,47 @@ class GRPOTrainer(Trainer):
 
     
     """Implementation of Trainer for GRPO algorithm."""
-    def calculate_loss(self, new_logprobs, old_logprobs, data):
-        # Separate chosen and rejected log probabilities
-        pass
+    def calculate_loss(self, new_logprobs, ref_logprobs, data):
+
+        #Input shape of the logprobs (B*G, L-1)
+        #I need to ensure with the choice of data that always G data points have the same original prompt.
+        #Then I can send in B different packages like this
+        #So i need the batch_size to be B*G
+        #I can start out with B=1, G=8
+        #This can easily be implemented if I just use the same prompt for all generations (always the same starting agent)
+
+        G = self.args.grpo.G
+
+        per_token_kl = torch.exp(ref_logprobs - new_logprobs) - (ref_logprobs - new_logprobs) - 1
+
+        #(B = original number of prompts x G = number of generations per prompt).
+        rewards = data[self.reward_key]
+
+        # Compute grouped-wise rewards (B, G) and take mean -> (B)
+        mean_grouped_rewards = rewards.view(-1, G).mean(dim=1)
+        std_grouped_rewards = rewards.view(-1, G).std(dim=1)
+
+        
+        # Normalize the rewards to compute the advantages
+        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(G, dim=0)
+        std_grouped_rewards = std_grouped_rewards.repeat_interleave(G, dim=0)
+        #Shape (B x G)
+        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
+
+        # x - x.detach() allows for preserving gradients from x
+        if self.args.grpo.online:
+            #(B, L-1)
+            per_token_loss = torch.exp(new_logprobs - new_logprobs.detach()) * advantages.unsqueeze(1)
+        else:
+            #(B, L-1)
+            per_token_loss = torch.exp(new_logprobs - ref_logprobs) * advantages.unsqueeze(1)
+
+        masks = data[self.mask_keys[0]]
+
+
+        per_token_loss = -(per_token_loss - self.args.grpo.beta * per_token_kl)
+        loss = ((per_token_loss * masks[:, 1:]).sum(dim=1) / masks[:, 1:].sum(dim=1)).clamp(min=1).mean()
+
+        return loss
+    
+    

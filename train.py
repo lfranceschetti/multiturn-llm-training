@@ -190,7 +190,7 @@ def main(cfg: DictConfig):
     for update in tqdm(range(1, args.num_updates + 1), disable= not accelerator.is_main_process):
 
         # VALIDATION
-        if (update - 1) % args.print_sample_output_freq == 0 or update == args.num_updates:
+        if (update - 1) % (args.print_sample_output_freq // accelerator.num_processes) == 0 or update == args.num_updates:
             if accelerator.is_main_process:
                 print(f"STARTING VALIDATION at update {update}")
             policy.eval()
@@ -199,6 +199,7 @@ def main(cfg: DictConfig):
             reject_logprobs_list = []
             with torch.no_grad():
                 for data in tqdm(validation_dataloader, disable= not accelerator.is_main_process):
+                    
                     new_logprobs = trainer.compute_logprobs(policy, tokenizer, data, device)
                     old_logprobs = trainer.get_reference_logprobs(data)
                     loss = trainer.calculate_loss(new_logprobs, old_logprobs, data)
@@ -254,7 +255,7 @@ def main(cfg: DictConfig):
 
 
         #Upload the model at specified intervals
-        if update % args.upload_interval == 0:
+        if update % (args.upload_interval // accelerator.num_processes) == 0:
             upload_to_hf(args, policy, tokenizer, accelerator, checkpoint=update)
         
         torch.cuda.empty_cache()
