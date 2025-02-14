@@ -6,7 +6,7 @@ track: true
 wandb_project_name: "multiturn_largebatch"
 run_name: null
 wandb_dir: null
-print_sample_output_freq: 500
+print_sample_output_freq: 100
 upload_interval: 2500
 
 
