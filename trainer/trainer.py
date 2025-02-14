@@ -17,6 +17,9 @@ from attr import define, field
 from accelerate import Accelerator
 from abc import abstractmethod
 from tqdm import tqdm
+from helpers.logger import WandbLogger, GRPO_Logger, REFUEL_Logger
+
+
 
 def validate_inputs(input_ids, attention_mask):
     assert input_ids is not None, "Input IDs tensor is None."
@@ -29,22 +32,28 @@ def validate_inputs(input_ids, attention_mask):
 @define
 class Trainer:
     args: DictConfig
+    accelerator: Accelerator
 
-    def __init__(self, args: DictConfig):
+
+    def __init__(self, args: DictConfig, accelerator: Accelerator):
         self.args = args
+        self.accelerator = accelerator
+        self.mode = "train"
         self.token_keys = ["chosen_token", "reject_token"]
         self.mask_keys = ["chosen_mask", "reject_mask"]
         self.reference_logprob_keys = ["chosen_logprob", "reject_logprob"]
         self.tokenized_logprobs = getattr(args, "tokenized_logprobs", False)
 
+        self.wandb_logger = WandbLogger(args, accelerator)
 
 
-    def setup_optimizer(self, accelerator: Accelerator, policy: nn.Module) -> Union[torch.optim.Optimizer, DummyOptim]:
+
+    def setup_optimizer(self, policy: nn.Module) -> Union[torch.optim.Optimizer, DummyOptim]:
         print("Setting up optimizer...")
         optimizer_cls = (
             torch.optim.AdamW
-            if accelerator.state.deepspeed_plugin is None
-            or "optimizer" not in accelerator.state.deepspeed_plugin.deepspeed_config
+            if self.accelerator.state.deepspeed_plugin is None
+            or "optimizer" not in self.accelerator.state.deepspeed_plugin.deepspeed_config
             else DummyOptim
         )
 
@@ -52,11 +61,11 @@ class Trainer:
         return optimizer
 
 
-    def setup_scheduler(self, accelerator, optimizer):
+    def setup_scheduler(self, optimizer):
         print("Setting up scheduler...")
         if (
-            accelerator.state.deepspeed_plugin is None
-            or "scheduler" not in accelerator.state.deepspeed_plugin.deepspeed_config
+            self.accelerator.state.deepspeed_plugin is None
+            or "scheduler" not in self.accelerator.state.deepspeed_plugin.deepspeed_config
         ):
             scheduler = get_cosine_schedule_with_warmup(optimizer, int(self.args.num_updates * self.args.warmup_ratio * self.args.world_size), self.args.num_updates * self.args.world_size)
         else:
@@ -80,15 +89,18 @@ class Trainer:
             #RuntimeError: FlashAttention only supports Ampere GPUs or newer.
             # attn_implementation="flash_attention_2",
         )
+        policy.config.use_cache = False
+        policy.gradient_checkpointing_enable()
+
         disable_dropout_in_model(policy)
 
         # policy.gradient_checkpointing_enable()
         return policy, tokenizer
     
-    def add_original_logprobs_to_datasets(self, dataset, validation_dataset, accelerator, policy, tokenizer, batch_size=4, chunk_size=4):
+    def add_original_logprobs_to_datasets(self, dataset, validation_dataset, policy, tokenizer, batch_size=4, chunk_size=4):
 
         print("Adding original logprobs to dataset...")
-        device = accelerator.device
+        device = self.accelerator.device
 
         def process_and_update(dataset, chunk_size):
             num_chunks = (len(dataset) + chunk_size - 1) // chunk_size  # Calculate number of chunks
@@ -105,7 +117,7 @@ class Trainer:
 
                     for batch in dataloader:
                         batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-                        logprobs = self.compute_logprobs(accelerator.unwrap_model(policy), tokenizer, batch, device)
+                        logprobs = self.compute_logprobs(self.accelerator.unwrap_model(policy), tokenizer, batch, device)
                         logprobs = logprobs.detach().cpu().float().tolist()
 
                         all_logprobs.extend(logprobs)
@@ -127,12 +139,12 @@ class Trainer:
         dataset = concatenate_datasets(train_dataset_chunks)
 
         # Save updated datasets to hub if main process
-        if accelerator.is_main_process:
+        if self.accelerator.is_main_process:
             DatasetDict({"train": dataset, "test": validation_dataset}).push_to_hub(
                 self.args.task.query_dataset + '_' + self.args.task.cluster
             )
 
-        accelerator.wait_for_everyone()
+        self.accelerator.wait_for_everyone()
 
         return dataset, validation_dataset
     
@@ -163,14 +175,32 @@ class Trainer:
                 logits = output.logits[:, :-1]
                 if self.args.task.temperature:
                     logits /= self.args.task.temperature + 1e-7
-                
 
-                #all_logprobs contains the log-probabilities for every token in the vocabulary for each position in the sequence.
-                #has the shape (B, L-1, V)
-                all_logprobs = F.log_softmax(logits, dim=-1)
-                #extract the log-probabilities of the actual target tokens for each position in the sequence
-                #logprrobs afterwards has shape (B, L-1)
-                logprobs = torch.gather(all_logprobs, 2, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
+
+                # 1) Compute log-sum-exp across vocab at each position
+                #    This is shape (B, L, 1).
+                logsumexp = torch.logsumexp(logits, dim=-1, keepdim=True)
+
+                # 2) Gather the logits corresponding to the *actual* next tokens
+                #    input_ids[:, 1:] is shape (B, L)
+                #    next_token_logits is (B, L, 1).
+                next_token_logits = torch.gather(
+                    logits, 
+                    dim=2, 
+                    index=input_ids[:, 1:].unsqueeze(-1)
+                )
+
+                # 3) Subtract log-sum-exp to get log-probs for those tokens
+                #    shape (B, L)
+                logprobs = (next_token_logits - logsumexp).squeeze(-1)
+
+
+                # #all_logprobs contains the log-probabilities for every token in the vocabulary for each position in the sequence.
+                # #has the shape (B, L-1, V)
+                # all_logprobs = F.log_softmax(logits, dim=-1)
+                # #extract the log-probabilities of the actual target tokens for each position in the sequence
+                # #logprrobs afterwards has shape (B, L-1)
+                # logprobs = torch.gather(all_logprobs, 2, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
 
                 #Sets logprobs to 0 for tokens we want to ignore. Masks was originally (B, L). To match (B, L-1) in logprobs, you need masks[:, 1:]
                 logprobs = logprobs * masks[:, 1:]
@@ -183,7 +213,7 @@ class Trainer:
                     logprobs = logprobs.sum(-1)
 
                 # Detach and delete tensors to free memory
-                del output, all_logprobs, logits, attention_mask, tokens, masks, input_ids
+                del output, logits, attention_mask, tokens, masks, input_ids, logsumexp, next_token_logits
                 torch.cuda.empty_cache()
 
                 results.append(logprobs)
@@ -201,7 +231,8 @@ class Trainer:
 
         #Resulting shape: (N*B) if a number is stored in each key, else (N*B, L-1)
         return torch.cat(results, dim=0)
-            
+    
+
 
 
     
@@ -211,6 +242,11 @@ class Trainer:
 
 
 class RefuelTrainer(Trainer):
+
+    def __init__(self, args, accelerator):
+        super().__init__(args, accelerator)
+        self.wandb_logger = REFUEL_Logger(args, accelerator)
+
     """Implementation of Trainer for Refuel algorithm."""
     def calculate_loss(self, new_logprobs, old_logprobs, data):
         ratio_logprob = new_logprobs - old_logprobs
@@ -227,6 +263,12 @@ class RefuelTrainer(Trainer):
 
         if self.args.refuel.nll_term:
             loss = loss + (self.args.refuel.nll_weight * -new_logprobs[:len(new_logprobs) // 2].mean() / self.args.task.total_length)
+
+        
+        if self.mode == "training":
+            self.wandb_logger.add_training_metrics(loss, chosen_logprobs=new_logprobs[:len(new_logprobs) // 2], reject_logprobs=new_logprobs[len(new_logprobs) // 2:])
+        elif self.mode == "validation":
+            self.wandb_logger.add_validation_metrics(loss, chosen_logprobs=new_logprobs[:len(new_logprobs) // 2], reject_logprobs=new_logprobs[len(new_logprobs) // 2:])
 
   
         return loss
@@ -269,14 +311,15 @@ class DPOTrainer(Trainer):
 
 class GRPOTrainer(Trainer):
 
-
-    def __init__(self, args: DictConfig):
-        self.args = args
+    def __init__(self, args: DictConfig, accelerator: Accelerator):
+        super().__init__(args, accelerator)
         self.token_keys =  ["token"]
         self.reward_key = "payoff"
         self.mask_keys =  ["mask"]
         self.reference_logprob_keys = ["logprob"]
         self.tokenized_logprobs = True
+        self.wandb_logger = GRPO_Logger(args, accelerator)
+
 
 
     
@@ -308,19 +351,40 @@ class GRPOTrainer(Trainer):
         #Shape (B x G)
         advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
 
-        # x - x.detach() allows for preserving gradients from x
+        
         if self.args.grpo.online:
             #(B, L-1)
-            per_token_loss = torch.exp(new_logprobs - new_logprobs.detach()) * advantages.unsqueeze(1)
+            # x - x.detach() allows for preserving gradients from x
+            prob_ratio = torch.exp(new_logprobs - new_logprobs.detach())
         else:
             #(B, L-1)
-            per_token_loss = torch.exp(new_logprobs - ref_logprobs) * advantages.unsqueeze(1)
+            prob_ratio = torch.exp(new_logprobs - ref_logprobs)
+
+
+        logprob_diff = new_logprobs - ref_logprobs
+        print("Logprob differences:", logprob_diff.min().item(), logprob_diff.max().item(), logprob_diff.mean().item())
+        print("prob_ratio min/max/mean:", prob_ratio.min().item(), prob_ratio.max().item(), prob_ratio.mean().item())
+        print(new_logprobs)
+        print(ref_logprobs)
+
+
+        per_token_loss = prob_ratio * advantages.unsqueeze(1)
 
         masks = data[self.mask_keys[0]]
 
 
         per_token_loss = -(per_token_loss - self.args.grpo.beta * per_token_kl)
         loss = ((per_token_loss * masks[:, 1:]).sum(dim=1) / masks[:, 1:].sum(dim=1)).clamp(min=1).mean()
+
+        #Logging
+        mean_kl  = ((per_token_kl * masks[:, 1:]).sum(dim=1) / masks[:, 1:].sum(dim=1)).mean()
+        reward_mean = rewards.mean()
+        reward_std = std_grouped_rewards.mean()
+        prob_ratio_mean = prob_ratio.mean()
+        if self.mode == "training":
+            self.wandb_logger.add_training_metrics(loss.detach(), reward_mean, reward_std, mean_kl, prob_ratio_mean)
+        elif self.mode == "validation":
+            self.wandb_logger.add_validation_metrics(loss.detach(), reward_mean, reward_std, mean_kl, prob_ratio_mean)
 
         return loss
     
