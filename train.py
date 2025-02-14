@@ -105,18 +105,6 @@ def upload_to_hf(args, model, tokenizer, accelerator, checkpoint=None):
 
 
 
-
-    
-
-
-
-
-
-
-
-
-
-
 @hydra.main(version_base=None, config_path="configs_training/experiment", config_name="${config-name}")
 def main(cfg: DictConfig):
 
@@ -132,11 +120,11 @@ def main(cfg: DictConfig):
     device = accelerator.device
 
     if args.training_method == "REFUEL":
-        trainer = RefuelTrainer(args=args)
+        trainer = RefuelTrainer(args=args, accelerator=accelerator)
     elif args.training_method == "DPO":
-        trainer = DPOTrainer(args=args)
+        trainer = DPOTrainer(args=args, accelerator=accelerator)
     elif args.training_method == "GRPO":
-        trainer = GRPOTrainer(args=args)
+        trainer = GRPOTrainer(args=args, accelerator=accelerator)
     
 
     #Cudnn will us deterministic algorithms, which means that the model will always produce the same output for the same input but it may slow down the training
@@ -153,10 +141,10 @@ def main(cfg: DictConfig):
     log_initial_info(args, accelerator, policy)
 
     # Creates Dummy Optimizer if `optimizer` was specified in the config file else creates Adam Optimizer
-    optimizer = trainer.setup_optimizer(accelerator, policy)
+    optimizer = trainer.setup_optimizer(policy)
 
     # Creates Dummy Scheduler if `scheduler` was specified in the config file else creates Cosine Scheduler
-    scheduler = trainer.setup_scheduler(accelerator, optimizer)
+    scheduler = trainer.setup_scheduler(optimizer)
 
     torch.manual_seed(args.seed)
 
@@ -174,55 +162,41 @@ def main(cfg: DictConfig):
 
     if recompute_log:
         #Add the logprobs of the initial model to the original dataset
-        dataset, validation_dataset = trainer.add_original_logprobs_to_datasets(dataset, validation_dataset, accelerator, policy, tokenizer)
+        dataset, validation_dataset = trainer.add_original_logprobs_to_datasets(dataset, validation_dataset, policy, tokenizer)
     
     data_iter = cycle(dataloader)
   
     torch.manual_seed(local_seed)  # reset the local seed again
     start_time = time.time()
 
-    wandb_logger = WandbLogger(args, accelerator)
 
     policy.train()
-    training_loss = []
-    training_chosen_logprobs = []
-    training_reject_logprobs = []
     for update in tqdm(range(1, args.num_updates + 1), disable= not accelerator.is_main_process):
 
         # VALIDATION
         if (update - 1) % (args.print_sample_output_freq // accelerator.num_processes) == 0 or update == args.num_updates:
+
+            trainer.mode = "validation"
             if accelerator.is_main_process:
                 print(f"STARTING VALIDATION at update {update}")
             policy.eval()
-            loss_list = []
-            chosen_logprobs_list = []
-            reject_logprobs_list = []
             with torch.no_grad():
                 for data in tqdm(validation_dataloader, disable= not accelerator.is_main_process):
-                    
                     new_logprobs = trainer.compute_logprobs(policy, tokenizer, data, device)
                     old_logprobs = trainer.get_reference_logprobs(data)
                     loss = trainer.calculate_loss(new_logprobs, old_logprobs, data)
-                    loss = torch.tensor(loss, device=device)
-                    loss_list.append(loss)
-                    chosen_logprobs_list.append(new_logprobs[: len(new_logprobs) // 2])
-                    reject_logprobs_list.append(new_logprobs[len(new_logprobs) // 2:])
 
-            wandb_logger.log_validation(loss_list, chosen_logprobs_list, reject_logprobs_list, step=update)
+            trainer.wandb_logger.log_validation(step=(update-1))
 
             if update > 1:
-                wandb_logger.log_training(training_loss, training_chosen_logprobs, training_reject_logprobs, step=update)
+                trainer.wandb_logger.log_training(step=(update-1))
             
-            del loss_list, chosen_logprobs_list, reject_logprobs_list, new_logprobs, old_logprobs
+            del new_logprobs, old_logprobs
 
             policy.train()
             torch.cuda.empty_cache()
 
-            training_loss, training_chosen_logprobs, training_reject_logprobs = [], [], []
-
-
         #TRAINING
-     
         try:
             data = next(data_iter)
         except StopIteration:
@@ -243,10 +217,6 @@ def main(cfg: DictConfig):
                 print(f"Invalid loss at update {update}: {loss}")
                 continue
 
-            training_loss.append(loss.item())
-            training_chosen_logprobs.append(new_logprobs[: len(new_logprobs) // 2])
-            training_reject_logprobs.append(new_logprobs[len(new_logprobs) // 2:])
-
             accelerator.backward(loss)
             accelerator.clip_grad_norm_(policy.parameters(), max_norm=1.0)
             optimizer.step()
@@ -263,7 +233,7 @@ def main(cfg: DictConfig):
     upload_to_hf(args, policy, tokenizer, accelerator)
 
    
-    wandb_logger.finalize()
+    trainer.wandb_logger.finalize()
     torch.cuda.empty_cache()
 
 
