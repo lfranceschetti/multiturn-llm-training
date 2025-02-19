@@ -17,7 +17,7 @@ from attr import define, field
 from accelerate import Accelerator
 from abc import abstractmethod
 from tqdm import tqdm
-from helpers.logger import WandbLogger, GRPO_Logger, REFUEL_Logger
+from helpers.logger import WandbLogger, GRPO_Logger, REFUEL_Logger, DPO_Logger
 
 
 
@@ -267,15 +267,20 @@ class RefuelTrainer(Trainer):
 
         
         if self.mode == "training":
-            self.wandb_logger.add_training_metrics(loss, new_logprobs[:len(new_logprobs) // 2], new_logprobs[len(new_logprobs) // 2:], data["chosen_reward"], data["reject_reward"])
+            self.wandb_logger.add_training_metrics(loss, new_logprobs[:len(new_logprobs) // 2], new_logprobs[len(new_logprobs) // 2:])
         elif self.mode == "validation":
-            self.wandb_logger.add_validation_metrics(loss, new_logprobs[:len(new_logprobs) // 2], new_logprobs[len(new_logprobs) // 2:], data["chosen_reward"], data["reject_reward"])
+            self.wandb_logger.add_validation_metrics(loss, new_logprobs[:len(new_logprobs) // 2], new_logprobs[len(new_logprobs) // 2:], old_logprobs[:len(old_logprobs) // 2], old_logprobs[len(old_logprobs) // 2:], explicit_reward_diff)
 
   
         return loss
 
 
 class DPOTrainer(Trainer):
+
+    def __init__(self, args: DictConfig, accelerator: Accelerator):
+        super().__init__(args, accelerator)
+        self.tokenized_logprobs = True
+        self.wandb_logger = DPO_Logger(args, accelerator)
 
     
     """Implementation of Trainer for DPO algorithm."""
@@ -303,6 +308,9 @@ class DPOTrainer(Trainer):
 
         # Compute the DPO loss
         loss = -torch.log(sigmoid).mean()
+
+        if self.mode=="validation":
+            self.wandb_logger.add_validation_metrics(loss, new_logprobs[:len(new_logprobs) // 2], new_logprobs[len(new_logprobs) // 2:], old_logprobs[:len(old_logprobs) // 2], old_logprobs[len(old_logprobs) // 2:])
 
         return loss
 
