@@ -17,6 +17,9 @@ from attr import define, field
 from accelerate import Accelerator
 from abc import abstractmethod
 from tqdm import tqdm
+from helpers.logger import WandbLogger, GRPO_Logger, REFUEL_Logger
+
+
 
 def validate_inputs(input_ids, attention_mask):
     assert input_ids is not None, "Input IDs tensor is None."
@@ -29,13 +32,28 @@ def validate_inputs(input_ids, attention_mask):
 @define
 class Trainer:
     args: DictConfig
+    accelerator: Accelerator
 
-    def setup_optimizer(self, accelerator: Accelerator, policy: nn.Module) -> Union[torch.optim.Optimizer, DummyOptim]:
+
+    def __init__(self, args: DictConfig, accelerator: Accelerator):
+        self.args = args
+        self.accelerator = accelerator
+        self.mode = "train"
+        self.token_keys = ["chosen_token", "reject_token"]
+        self.mask_keys = ["chosen_mask", "reject_mask"]
+        self.reference_logprob_keys = ["chosen_logprob", "reject_logprob"]
+        self.tokenized_logprobs = getattr(args, "tokenized_logprobs", False)
+
+        self.wandb_logger = WandbLogger(args, accelerator)
+
+
+
+    def setup_optimizer(self, policy: nn.Module) -> Union[torch.optim.Optimizer, DummyOptim]:
         print("Setting up optimizer...")
         optimizer_cls = (
             torch.optim.AdamW
-            if accelerator.state.deepspeed_plugin is None
-            or "optimizer" not in accelerator.state.deepspeed_plugin.deepspeed_config
+            if self.accelerator.state.deepspeed_plugin is None
+            or "optimizer" not in self.accelerator.state.deepspeed_plugin.deepspeed_config
             else DummyOptim
         )
 
@@ -43,11 +61,11 @@ class Trainer:
         return optimizer
 
 
-    def setup_scheduler(self, accelerator, optimizer):
+    def setup_scheduler(self, optimizer):
         print("Setting up scheduler...")
         if (
-            accelerator.state.deepspeed_plugin is None
-            or "scheduler" not in accelerator.state.deepspeed_plugin.deepspeed_config
+            self.accelerator.state.deepspeed_plugin is None
+            or "scheduler" not in self.accelerator.state.deepspeed_plugin.deepspeed_config
         ):
             scheduler = get_cosine_schedule_with_warmup(optimizer, int(self.args.num_updates * self.args.warmup_ratio * self.args.world_size), self.args.num_updates * self.args.world_size)
         else:
@@ -71,15 +89,18 @@ class Trainer:
             #RuntimeError: FlashAttention only supports Ampere GPUs or newer.
             # attn_implementation="flash_attention_2",
         )
+        policy.config.use_cache = False
+        policy.gradient_checkpointing_enable()
+
         disable_dropout_in_model(policy)
 
         # policy.gradient_checkpointing_enable()
         return policy, tokenizer
     
-    def add_original_logprobs_to_datasets(self, dataset, validation_dataset, accelerator, policy, tokenizer, batch_size=4, chunk_size=4):
+    def add_original_logprobs_to_datasets(self, dataset, validation_dataset, policy, tokenizer, batch_size=4, chunk_size=4):
 
         print("Adding original logprobs to dataset...")
-        device = accelerator.device
+        device = self.accelerator.device
 
         def process_and_update(dataset, chunk_size):
             num_chunks = (len(dataset) + chunk_size - 1) // chunk_size  # Calculate number of chunks
@@ -96,16 +117,17 @@ class Trainer:
 
                     for batch in dataloader:
                         batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-                        logprobs = self.compute_logprobs(accelerator.unwrap_model(policy), tokenizer, batch, device)
+                        logprobs = self.compute_logprobs(self.accelerator.unwrap_model(policy), tokenizer, batch, device)
+                        logprobs = logprobs.detach().cpu().float().tolist()
+
                         all_logprobs.extend(logprobs)
                         torch.cuda.empty_cache()
 
                     # Update chunk with logprobs
-                    chosen_logprobs = [float(x.cpu().item()) for x in all_logprobs[: len(chunk)]]
-                    reject_logprobs = [float(x.cpu().item()) for x in all_logprobs[len(chunk):]]
-
-                    chunk = chunk.add_column("chosen_logprob", chosen_logprobs)
-                    chunk = chunk.add_column("reject_logprob", reject_logprobs)
+                    for i, logprob_key in enumerate(self.reference_logprob_keys):
+                        log_probs = all_logprobs[i * len(chunk) : (i + 1) * len(chunk)]
+                        chunk = chunk.add_column(logprob_key, log_probs)
+                  
                     updated_dataset.append(chunk)
 
             return updated_dataset
@@ -117,18 +139,21 @@ class Trainer:
         dataset = concatenate_datasets(train_dataset_chunks)
 
         # Save updated datasets to hub if main process
-        if accelerator.is_main_process:
+        if self.accelerator.is_main_process:
             DatasetDict({"train": dataset, "test": validation_dataset}).push_to_hub(
                 self.args.task.query_dataset + '_' + self.args.task.cluster
             )
 
-        accelerator.wait_for_everyone()
+        self.accelerator.wait_for_everyone()
 
         return dataset, validation_dataset
     
     def compute_logprobs(self, policy, tokenizer, data, device):
             results = []
-            for token_key, mask_key in [("chosen_token", "chosen_mask"), ("reject_token", "reject_mask")]:
+
+            assert len(self.token_keys) == len(self.mask_keys), "Number of token_keys and mask_keys should be the same."
+            
+            for token_key, mask_key in zip(self.token_keys, self.mask_keys):
                 tokens = data[token_key].to(device)
                 masks = data[mask_key].to(device)
 
@@ -138,7 +163,6 @@ class Trainer:
                 input_ids = torch.masked_fill(tokens, ~attention_mask, tokenizer.eos_token_id)
 
                 validate_inputs(input_ids, attention_mask)
-
             
                 output = policy(
                     input_ids=input_ids,
@@ -149,26 +173,67 @@ class Trainer:
                 #The output.logits contains the unnormalized scores (logits) for each token.
                 #Removes the logits corresponding to the last token in each sequence
                 logits = output.logits[:, :-1]
-                logits /= self.args.task.temperature + 1e-7
+                if self.args.task.temperature:
+                    logits /= self.args.task.temperature + 1e-7
 
-                #all_logprobs contains the log-probabilities for every token in the vocabulary for each position in the sequence.
-                #has the shape (batch_size, sequence_length - 1, vocab_size)
-                all_logprobs = F.log_softmax(logits, dim=-1)
-                #extract the log-probabilities of the actual target tokens for each position in the sequence
-                #logprrobs afterwards has shape (batch_size, sequence_length - 1)
-                logprobs = torch.gather(all_logprobs, 2, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
 
-                #Sets logprobs to 0 for padding tokens and sums the log-probabilities for each position in the sequence
+                # 1) Compute log-sum-exp across vocab at each position
+                #    This is shape (B, L, 1).
+                logsumexp = torch.logsumexp(logits, dim=-1, keepdim=True)
+
+                # 2) Gather the logits corresponding to the *actual* next tokens
+                #    input_ids[:, 1:] is shape (B, L)
+                #    next_token_logits is (B, L, 1).
+                next_token_logits = torch.gather(
+                    logits, 
+                    dim=2, 
+                    index=input_ids[:, 1:].unsqueeze(-1)
+                )
+
+                # 3) Subtract log-sum-exp to get log-probs for those tokens
+                #    shape (B, L)
+                logprobs = (next_token_logits - logsumexp).squeeze(-1)
+
+
+                # #all_logprobs contains the log-probabilities for every token in the vocabulary for each position in the sequence.
+                # #has the shape (B, L-1, V)
+                # all_logprobs = F.log_softmax(logits, dim=-1)
+                # #extract the log-probabilities of the actual target tokens for each position in the sequence
+                # #logprrobs afterwards has shape (B, L-1)
+                # logprobs = torch.gather(all_logprobs, 2, input_ids[:, 1:].unsqueeze(-1)).squeeze(-1)
+
+                #Sets logprobs to 0 for tokens we want to ignore. Masks was originally (B, L). To match (B, L-1) in logprobs, you need masks[:, 1:]
                 logprobs = logprobs * masks[:, 1:]
-                #Resulting shape: (batch_size)
-                logprobs = logprobs.sum(-1)
+
+                if self.tokenized_logprobs:
+                    #Resulting shape: (B, L-1)
+                    pass
+                else:
+                    #Resulting shape: (B)
+                    logprobs = logprobs.sum(-1)
 
                 # Detach and delete tensors to free memory
-                del output, all_logprobs, logits, attention_mask, tokens, masks, input_ids
+                del output, logits, attention_mask, tokens, masks, input_ids, logsumexp, next_token_logits
                 torch.cuda.empty_cache()
 
                 results.append(logprobs)
+
+            #Resulting shape: (N*B) if tokenized_logprobs is False, else (N*B, L-1)
             return torch.cat(results, dim=0)
+    
+
+
+    
+    def get_reference_logprobs(self, data):
+        results = []
+        for key in self.reference_logprob_keys:
+            results.append(data[key])
+
+        #Resulting shape: (N*B) if a number is stored in each key, else (N*B, L-1)
+        return torch.cat(results, dim=0)
+    
+
+
 
     
     @abstractmethod
@@ -177,6 +242,11 @@ class Trainer:
 
 
 class RefuelTrainer(Trainer):
+
+    def __init__(self, args, accelerator):
+        super().__init__(args, accelerator)
+        self.wandb_logger = REFUEL_Logger(args, accelerator)
+
     """Implementation of Trainer for Refuel algorithm."""
     def calculate_loss(self, new_logprobs, old_logprobs, data):
         ratio_logprob = new_logprobs - old_logprobs
@@ -195,6 +265,13 @@ class RefuelTrainer(Trainer):
         if self.args.refuel.nll_term:
             loss = loss + (self.args.refuel.nll_weight * -new_logprobs[:len(new_logprobs) // 2].mean() / self.args.task.total_length)
 
+        
+        if self.mode == "training":
+            self.wandb_logger.add_training_metrics(loss, new_logprobs[:len(new_logprobs) // 2], new_logprobs[len(new_logprobs) // 2:], data["chosen_reward"], data["reject_reward"])
+        elif self.mode == "validation":
+            self.wandb_logger.add_validation_metrics(loss, new_logprobs[:len(new_logprobs) // 2], new_logprobs[len(new_logprobs) // 2:], data["chosen_reward"], data["reject_reward"])
+
+  
         return loss
 
 
@@ -203,26 +280,112 @@ class DPOTrainer(Trainer):
     
     """Implementation of Trainer for DPO algorithm."""
     def calculate_loss(self, new_logprobs, old_logprobs, data):
-        # Separate chosen and rejected log probabilities
-        pi_w = new_logprobs[:len(new_logprobs) // 2]
-        pi_l = new_logprobs[len(new_logprobs) // 2:]
-        pi_ref_w = old_logprobs[:len(old_logprobs) // 2]
-        pi_ref_l = old_logprobs[len(old_logprobs) // 2:]
+        # Separate chosen (winning) and rejected (losing) log probabilities
+        pi_w = new_logprobs[:len(new_logprobs) // 2]      # π*(a^w | s^w)
+        pi_l = new_logprobs[len(new_logprobs) // 2:]      # π*(a^l | s^l)
+        pi_ref_w = old_logprobs[:len(old_logprobs) // 2]  # π_ref(a^w | s^w)
+        pi_ref_l = old_logprobs[len(old_logprobs) // 2:]  # π_ref(a^l | s^l)
 
-        # Compute log ratio for chosen and rejected trajectories
-        log_ratio_chosen = pi_w - pi_ref_w
-        log_ratio_rejected = pi_l - pi_ref_l
+        # Compute log ratios for chosen (winning) and rejected (losing) trajectories
+        log_ratio_chosen = pi_w - pi_ref_w  # log(π*(a^w | s^w) / π_ref(a^w | s^w))
+        log_ratio_rejected = pi_l - pi_ref_l  # log(π*(a^l | s^l) / π_ref(a^l | s^l))
 
-        # Compute the sigmoid term
+        # Compute the argument for the sigmoid function
         beta = self.args.dpo.beta
-        sigmoid_arg = beta * (log_ratio_chosen - log_ratio_rejected)
+        sigmoid_arg = beta * (log_ratio_chosen.sum() - log_ratio_rejected.sum())
 
+        # Optional offset adjustment
         if self.args.dpo.with_offset:
             sigmoid_arg = sigmoid_arg - (data["chosen_reward"] - data["reject_reward"])
 
+        # Apply the sigmoid function
         sigmoid = torch.sigmoid(sigmoid_arg)
 
         # Compute the DPO loss
         loss = -torch.log(sigmoid).mean()
 
         return loss
+
+
+
+
+class GRPOTrainer(Trainer):
+
+    def __init__(self, args: DictConfig, accelerator: Accelerator):
+        super().__init__(args, accelerator)
+        self.token_keys =  ["token"]
+        self.reward_key = "payoff"
+        self.mask_keys =  ["mask"]
+        self.reference_logprob_keys = ["logprob"]
+        self.tokenized_logprobs = True
+        self.wandb_logger = GRPO_Logger(args, accelerator)
+
+
+
+    
+    """Implementation of Trainer for GRPO algorithm."""
+    def calculate_loss(self, new_logprobs, ref_logprobs, data):
+
+        #Input shape of the logprobs (B*G, L-1)
+        #I need to ensure with the choice of data that always G data points have the same original prompt.
+        #Then I can send in B different packages like this
+        #So i need the batch_size to be B*G
+        #I can start out with B=1, G=8
+        #This can easily be implemented if I just use the same prompt for all generations (always the same starting agent)
+
+        G = self.args.grpo.G
+
+        per_token_kl = torch.exp(ref_logprobs - new_logprobs) - (ref_logprobs - new_logprobs) - 1
+
+        #(B = original number of prompts x G = number of generations per prompt).
+        rewards = data[self.reward_key]
+
+        # Compute grouped-wise rewards (B, G) and take mean -> (B)
+        mean_grouped_rewards = rewards.view(-1, G).mean(dim=1)
+        std_grouped_rewards = rewards.view(-1, G).std(dim=1)
+
+        
+        # Normalize the rewards to compute the advantages
+        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(G, dim=0)
+        std_grouped_rewards = std_grouped_rewards.repeat_interleave(G, dim=0)
+        #Shape (B x G)
+        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
+
+        
+        if self.args.grpo.online:
+            #(B, L-1)
+            # x - x.detach() allows for preserving gradients from x
+            prob_ratio = torch.exp(new_logprobs - new_logprobs.detach())
+        else:
+            #(B, L-1)
+            prob_ratio = torch.exp(new_logprobs - ref_logprobs)
+
+
+        logprob_diff = new_logprobs - ref_logprobs
+        print("Logprob differences:", logprob_diff.min().item(), logprob_diff.max().item(), logprob_diff.mean().item())
+        print("prob_ratio min/max/mean:", prob_ratio.min().item(), prob_ratio.max().item(), prob_ratio.mean().item())
+        print(new_logprobs)
+        print(ref_logprobs)
+
+
+        per_token_loss = prob_ratio * advantages.unsqueeze(1)
+
+        masks = data[self.mask_keys[0]]
+
+
+        per_token_loss = -(per_token_loss - self.args.grpo.beta * per_token_kl)
+        loss = ((per_token_loss * masks[:, 1:]).sum(dim=1) / masks[:, 1:].sum(dim=1)).clamp(min=1).mean()
+
+        #Logging
+        mean_kl  = ((per_token_kl * masks[:, 1:]).sum(dim=1) / masks[:, 1:].sum(dim=1)).mean()
+        reward_mean = rewards.mean()
+        reward_std = std_grouped_rewards.mean()
+        prob_ratio_mean = prob_ratio.mean()
+        if self.mode == "training":
+            self.wandb_logger.add_training_metrics(loss.detach(), reward_mean, reward_std, mean_kl, prob_ratio_mean)
+        elif self.mode == "validation":
+            self.wandb_logger.add_validation_metrics(loss.detach(), reward_mean, reward_std, mean_kl, prob_ratio_mean)
+
+        return loss
+    
+    
