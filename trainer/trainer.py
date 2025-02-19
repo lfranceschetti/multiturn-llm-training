@@ -182,11 +182,12 @@ class RefuelTrainer(Trainer):
         ratio_logprob = new_logprobs - old_logprobs
         ratio_logprob = ratio_logprob[:len(new_logprobs) // 2] - ratio_logprob[len(new_logprobs) // 2:]
 
+        explicit_reward_diff = (data["chosen_reward"] - data["reject_reward"])
 
         if not self.args.refuel.eta:
-            reg_diff = self.args.refuel.beta * ratio_logprob - (data["chosen_reward"] - data["reject_reward"])
+            reg_diff = self.args.refuel.beta * ratio_logprob - explicit_reward_diff
         else:
-            reg_diff = ratio_logprob - self.args.refuel.eta * (data["chosen_reward"] - data["reject_reward"])
+            reg_diff = ratio_logprob - self.args.refuel.eta * explicit_reward_diff
 
         
         loss = (reg_diff ** 2).mean()
@@ -194,9 +195,7 @@ class RefuelTrainer(Trainer):
         if self.args.refuel.nll_term:
             loss = loss + (self.args.refuel.nll_weight * -new_logprobs[:len(new_logprobs) // 2].mean() / self.args.task.total_length)
 
-  
         return loss
-
 
 
 class DPOTrainer(Trainer):
