@@ -68,38 +68,7 @@ def upload_to_hf(args, model, tokenizer, accelerator, checkpoint=None):
     # fp32_model = load_state_dict_from_zero_checkpoint(unwrapped_model, checkpoint_dir)
 
 
-
     accelerator.wait_for_everyone()
-
-
-
-        # print(f"Saving pretrained model to {model_save_dir}")
-        # model_to_save = accelerator.unwrap_model(model)
-        # state_dict = accelerator.get_state_dict(model)
-        # model_to_save.save_pretrained(model_save_dir, safe_serialization=True, save_function=accelerator.save, state_dict=state_dict)
-        # tokenizer.save_pretrained(model_save_dir)
-
-        # print("Model successfully saved")
-
-
-        # if checkpoint is None:
-
-        #     # Extract W&B API key
-        #     hf_token = os.getenv("HF_TOKEN")
-        #     login(hf_token)
-
-        #     api = HfApi()
-        #     user_info = api.whoami(token=hf_token)
-        #     hf_username = user_info["name"]
-
-        #     name = f"{hf_username}/{args.exp_name}"
-
-        #     print(f"Uploading model and tokenizer to Hugging Face Hub under {name}...")
-
-        #     tokenizer.push_to_hub(name)
-        #     model_to_save.push_to_hub(name)
-
-        #     print(f"Checkpoint {name} successfully uploaded to Hugging Face Hub.")
 
 
 
@@ -174,7 +143,7 @@ def main(cfg: DictConfig):
     for update in tqdm(range(1, args.num_updates + 1), disable= not accelerator.is_main_process):
 
         # VALIDATION
-        if (update - 1) % (args.print_sample_output_freq // accelerator.num_processes) == 0 or update == args.num_updates:
+        if (update - 1) % (args.print_sample_output_freq // args.batch_size) == 0 or update == args.num_updates:
 
             trainer.mode = "validation"
             if accelerator.is_main_process:
@@ -225,7 +194,7 @@ def main(cfg: DictConfig):
 
 
         #Upload the model at specified intervals
-        if update % (args.upload_interval // accelerator.num_processes) == 0:
+        if update % (args.upload_interval // args.batch_size) == 0:
             upload_to_hf(args, policy, tokenizer, accelerator, checkpoint=update)
         
         torch.cuda.empty_cache()
