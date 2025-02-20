@@ -279,7 +279,7 @@ class DPOTrainer(Trainer):
 
     def __init__(self, args: DictConfig, accelerator: Accelerator):
         super().__init__(args, accelerator)
-        self.tokenized_logprobs = True
+        self.tokenized_logprobs = False
         self.wandb_logger = DPO_Logger(args, accelerator)
 
     
@@ -297,7 +297,7 @@ class DPOTrainer(Trainer):
 
         # Compute the argument for the sigmoid function
         beta = self.args.dpo.beta
-        sigmoid_arg = beta * (log_ratio_chosen.sum() - log_ratio_rejected.sum())
+        sigmoid_arg = beta * (log_ratio_chosen - log_ratio_rejected)
 
         # Optional offset adjustment
         if self.args.dpo.with_offset:
