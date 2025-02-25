@@ -13,10 +13,7 @@ module load gcc/13.2.0
 module load python/3.11.6_cuda
 module load eth_proxy
 
-export HF_HOME="/cluster/scratch/fraluca/huggingface"
-export HF_TOKEN="***REMOVED***"
-
-# MODEL="meta-llama/Llama-3.1-8B-Instruct"
+source ~/my_env.sh
 
 # Execute Python script
 python ./upload_model_to_hf.py
