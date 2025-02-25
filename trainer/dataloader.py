@@ -16,11 +16,11 @@ def load_datasets(args):
 
     
     try:
-        dataset = load_dataset(args.task.query_dataset + '_' + args.task.cluster, split='train')
+        dataset = load_dataset(args.dataset + '_' , split='train')
         dataset = dataset.with_format("torch", columns=extended_columns)
         temp_dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
 
-        validation_dataset = load_dataset(args.task.query_dataset + '_' + args.task.cluster, split='test')
+        validation_dataset = load_dataset(args.dataset + '_', split='test')
         validation_dataset = validation_dataset.with_format("torch", columns=extended_columns)
 
         #Check if the dataset has elements else recompute logprobs
@@ -28,10 +28,10 @@ def load_datasets(args):
         if len(dataset) == 0:
            recompute_log = True
     except:
-        dataset = load_dataset(args.task.query_dataset, split='train')
+        dataset = load_dataset(args.dataset, split='train')
         dataset = dataset.with_format("torch", columns=columns)
         temp_dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
-        validation_dataset = load_dataset(args.task.query_dataset, split='test')
+        validation_dataset = load_dataset(args.dataset, split='test')
         validation_dataset = validation_dataset.with_format("torch", columns=columns)
         recompute_log = True
     return dataset, validation_dataset, temp_dataloader, recompute_log
