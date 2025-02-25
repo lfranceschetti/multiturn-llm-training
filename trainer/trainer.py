@@ -17,7 +17,7 @@ from attr import define, field
 from accelerate import Accelerator
 from abc import abstractmethod
 from tqdm import tqdm
-from helpers.logger import WandbLogger, GRPO_Logger, REFUEL_Logger, DPO_Logger
+from trainer.logger import WandbLogger, GRPO_Logger, REFUEL_Logger, DPO_Logger
 
 
 
@@ -141,7 +141,7 @@ class Trainer:
         # Save updated datasets to hub if main process
         if self.accelerator.is_main_process:
             DatasetDict({"train": dataset, "test": validation_dataset}).push_to_hub(
-                self.args.task.query_dataset + '_' + self.args.task.cluster
+                self.args.dataset + '_' 
             )
 
         self.accelerator.wait_for_everyone()
@@ -173,8 +173,8 @@ class Trainer:
                 #The output.logits contains the unnormalized scores (logits) for each token.
                 #Removes the logits corresponding to the last token in each sequence
                 logits = output.logits[:, :-1]
-                if self.args.task.temperature:
-                    logits /= self.args.task.temperature + 1e-7
+                if self.args.temperature:
+                    logits /= self.args.temperature + 1e-7
 
 
                 # 1) Compute log-sum-exp across vocab at each position
@@ -263,7 +263,7 @@ class RefuelTrainer(Trainer):
         loss = (reg_diff ** 2).mean()
 
         if self.args.refuel.nll_term:
-            loss = loss + (self.args.refuel.nll_weight * -new_logprobs[:len(new_logprobs) // 2].mean() / self.args.task.total_length)
+            loss = loss + (self.args.refuel.nll_weight * -new_logprobs[:len(new_logprobs) // 2].mean() / self.args.total_length)
 
         
         if self.mode == "training":

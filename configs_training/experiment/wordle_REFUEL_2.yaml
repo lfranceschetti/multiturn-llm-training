@@ -24,21 +24,14 @@ per_device_train_batch_size: 1
 per_device_eval_batch_size: 16
 total_episodes: 8000
 
-# Optional runtime settings
-world_size: 1
-batch_size: null
-local_batch_size: null
-
+ 
 # Model paths
 base_model: "meta-llama/Llama-3.1-8B-Instruct"
 output_dir: "/cluster/scratch/fraluca/huggingface/models/"
+dataset: "LuckyLukke/wordle_REFUEL_turnwise_2"
 
-# Task-specific settings
-task:
-  query_dataset: "LuckyLukke/wordle_REFUEL_turnwise_2"
-  cluster: ""
-  total_length: 1024
-  temperature: 0.9
+total_length: 1024
+temperature: 0.9
 
 # REFUEL-specific settings
 refuel:
