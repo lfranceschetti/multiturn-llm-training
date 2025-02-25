@@ -1,0 +1,17 @@
+logs/
+
+secrets.json
+
+wandb/
+
+outputs/
+
+runs/
+
+*.out
+*.err
+
+*.pkl
+*.pyc
+
+my_env.sh
