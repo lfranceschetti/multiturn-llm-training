@@ -15,13 +15,9 @@ module load gcc/13.2.0
 module load python/3.11.6_cuda
 module load eth_proxy
 
-export HF_HOME="/cluster/scratch/fraluca/huggingface"
-export HF_TOKEN="***REMOVED***"
-
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-
+source ~/my_env.sh
 
 
 # Execute Python script
-accelerate launch --config_file=/cluster/home/fraluca/.cache/huggingface/accelerate/default_config.yaml --main_process_port=29501 train.py --config-name 8B_GRPO_1
+accelerate launch --config_file=$ACCELERATE_CONFIG --main_process_port=29501 train.py --config-name 8B_GRPO_1
  

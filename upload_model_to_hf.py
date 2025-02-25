@@ -19,8 +19,8 @@ accelerator = Accelerator()
 
 
 names = [
-  "wordle_REFUEL_turnwise-0.01-2-2000",
-  "wordle_REFUEL_turnwise-0.001-2-2000",
+  "DPO_1",
+  "DPO_1-936"
 
   # "wordle_REFUEL_turnwise-0.001",
 ]
@@ -32,11 +32,11 @@ for name in names:
   
   output_dir = "/cluster/scratch/fraluca/huggingface/models/" + name
 
-  if len(name.split("-")) == 5:
-    #Multiply the checkpoint by 2
-    checkpoint = int(name.split("-")[-1]) * 2
-    name = "-".join(name.split("-")[:-1])
-    name += "-" + str(checkpoint)
+  # if len(name.split("-")) == 5:
+  #   #Multiply the checkpoint by 2
+  #   checkpoint = int(name.split("-")[-1]) * 2
+  #   name = "-".join(name.split("-")[:-1])
+  #   name += "-" + str(checkpoint)
 
   base_model_name = "meta-llama/Llama-3.1-8B-Instruct"  # Replace with the base model name (e.g., bert-base-uncased)
   repo_name = "LuckyLukke/" + name
