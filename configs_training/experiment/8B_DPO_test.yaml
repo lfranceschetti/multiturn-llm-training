@@ -19,7 +19,7 @@ start_idx: 0
 end_idx: -1
 
 gradient_accumulation_steps: 1
-per_device_train_batch_size: 1
+per_device_train_batch_size: 4
 per_device_eval_batch_size: 16
 total_episodes: 15000
 
@@ -34,7 +34,7 @@ output_dir: "/cluster/scratch/fraluca/huggingface/models/"
 
 # Task-specific settings
 task:
-  query_dataset: "LuckyLukke/negotio_REFUEL_onesided_preprocessed"
+  query_dataset: "LuckyLukke/negotio_DPO_onesided_preprocessed"
   cluster: ""
   total_length: 2048
   temperature: 0.9

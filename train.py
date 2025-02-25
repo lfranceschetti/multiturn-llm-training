@@ -9,7 +9,7 @@ from rich.pretty import pprint
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
-from helpers.logger import WandbLogger, log_initial_info
+from trainer.logger import WandbLogger, log_initial_info
 from itertools import cycle
 from omegaconf import DictConfig, OmegaConf, open_dict
 from huggingface_hub import HfApi, login
@@ -103,6 +103,17 @@ def main(cfg: DictConfig):
 
     dataset, validation_dataset, temp_dataloader, recompute_log = load_datasets(args)
 
+    MIN_LOGPROB = -500  # example threshold
+
+    def filter_by_logprob(example):
+        # Return True if the example's chosen_logprob is above threshold
+        return example["chosen_logprob"] > MIN_LOGPROB
+
+    filtered_dataset = dataset.filter(filter_by_logprob)
+
+    # Do the same for validation_dataset if you want:
+    filtered_validation_dataset = validation_dataset.filter(filter_by_logprob)
+
     if args.end_idx != -1:
         dataset = dataset.select(range(args.start_idx, args.end_idx))
 
@@ -119,8 +130,8 @@ def main(cfg: DictConfig):
 
     print("PREPARING DATALOADERS")
 
-    dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    validation_dataloader = DataLoader(validation_dataset, batch_size=args.per_device_eval_batch_size, shuffle=False)
+    dataloader = DataLoader(filtered_dataset, batch_size=args.local_batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    validation_dataloader = DataLoader(filtered_validation_dataset, batch_size=args.per_device_eval_batch_size, shuffle=False)
 
     print("PREPARING ACCELERATOR")
     # After setting up optimizer and scheduler
@@ -195,7 +206,7 @@ def main(cfg: DictConfig):
 
         #Upload the model at specified intervals
         if update % (args.upload_interval // args.batch_size) == 0:
-            upload_to_hf(args, policy, tokenizer, accelerator, checkpoint=update)
+            upload_to_hf(args, policy, tokenizer, accelerator, checkpoint=update*args.batch_size)
         
         torch.cuda.empty_cache()
 
