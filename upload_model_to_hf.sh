@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --time=00:30:00          # Max runtime
+#SBATCH --time=01:00:00          # Max runtime
 #SBATCH --mem-per-cpu=100G         # Memory per CPU
 #SBATCH --nodes=1                # Number of nodes
 #SBATCH --gpus=a100-pcie-40gb:2

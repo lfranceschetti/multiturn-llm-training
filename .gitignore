@@ -15,3 +15,5 @@ runs/
 *.pyc
 
 my_env.sh
+
+*.sh

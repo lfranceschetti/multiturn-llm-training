@@ -1,0 +1,43 @@
+
+exp_name: "clembench_REFUEL_SFT_1"
+training_method: REFUEL
+seed: 555134
+track: true
+wandb_project_name: "multiturn_largebatch"
+run_name: null
+wandb_dir: null
+print_sample_output_freq: 250
+upload_interval: 1000
+
+
+# Optimizer settings
+eps: 1e-8
+lr: 3e-7
+weight_decay: 1e-6
+optimizer: "adamw"
+warmup_ratio: 0.1
+start_idx: 0
+end_idx: -1
+
+gradient_accumulation_steps: 1
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 16
+total_episodes: 5000
+
+ 
+# Model paths
+base_model: "unsloth/Llama-3.2-1B-bnb-4bit"
+output_dir: "/cluster/scratch/fraluca/huggingface/models/"
+dataset: "LuckyLukke/clembench_REFUEL_SFT_1"
+
+total_length: 1024
+temperature: 0.9
+
+# REFUEL-specific settings
+refuel:
+  whiten_rewards: false
+  shift_mean: false
+  eta: null
+  beta: 0.01
+  nll_term: False
+  alpha: null
