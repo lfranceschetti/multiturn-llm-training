@@ -21,6 +21,7 @@ from trainer.logger import WandbLogger, GRPO_Logger, REFUEL_Logger, DPO_Logger
 
 
 
+
 def validate_inputs(input_ids, attention_mask):
     assert input_ids is not None, "Input IDs tensor is None."
     assert attention_mask is not None, "Attention Mask tensor is None."
@@ -38,7 +39,7 @@ class Trainer:
     def __init__(self, args: DictConfig, accelerator: Accelerator):
         self.args = args
         self.accelerator = accelerator
-        self.mode = "train"
+        self.mode = "training"
         self.token_keys = ["chosen_token", "reject_token"]
         self.mask_keys = ["chosen_mask", "reject_mask"]
         self.reference_logprob_keys = ["chosen_logprob", "reject_logprob"]
@@ -57,7 +58,12 @@ class Trainer:
             else DummyOptim
         )
 
-        optimizer = optimizer_cls(policy.parameters(), lr=self.args.lr, eps=self.args.eps, weight_decay=self.args.weight_decay)
+        optimizer = optimizer_cls(
+            filter(lambda p: p.requires_grad, policy.parameters()),
+            lr=self.args.lr,
+            eps=self.args.eps,
+            weight_decay=self.args.weight_decay
+        )
         return optimizer
 
 
@@ -72,8 +78,9 @@ class Trainer:
             scheduler = DummyScheduler(
             optimizer, total_num_steps=self.args.num_updates * self.args.world_size, warmup_num_steps=int(self.args.num_updates * self.args.warmup_ratio * self.args.world_size))
         return scheduler
+    
 
-    def setup_model(self):
+    def setup_model(self, quantized=False):
         tokenizer = AutoTokenizer.from_pretrained(
             self.args.base_model,
             padding_side='right',
@@ -94,7 +101,6 @@ class Trainer:
 
         disable_dropout_in_model(policy)
 
-        # policy.gradient_checkpointing_enable()
         return policy, tokenizer
     
     def add_original_logprobs_to_datasets(self, dataset, validation_dataset, policy, tokenizer, batch_size=4, chunk_size=4):
@@ -116,8 +122,12 @@ class Trainer:
                     all_logprobs = []
 
                     for batch in dataloader:
-                        batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
-                        logprobs = self.compute_logprobs(self.accelerator.unwrap_model(policy), tokenizer, batch, device)
+                        # batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
+                        batch = {k: v for k, v in batch.items()}  # <- Accelerate auto handles devices
+                        #CHANGE
+                        # logprobs = self.compute_logprobs(self.accelerator.unwrap_model(policy), tokenizer, batch, device)
+                        logprobs = self.compute_logprobs(policy, tokenizer, batch, device)
+
                         logprobs = logprobs.detach().cpu().float().tolist()
 
                         all_logprobs.extend(logprobs)

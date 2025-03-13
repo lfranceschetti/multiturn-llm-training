@@ -33,14 +33,12 @@ def set_seeds(local_seed: int) -> None:
 
 def set_arguments(args, num_processes):
 
-    args.world_size = num_processes
-
-    args.local_batch_size = args.per_device_train_batch_size * args.gradient_accumulation_steps
-
-    args.batch_size = args.world_size * args.local_batch_size
-
     with open_dict(args):  # Temporarily allow adding attributes
+        args.world_size = num_processes
+        args.local_batch_size = args.per_device_train_batch_size * args.gradient_accumulation_steps
+        args.batch_size = args.world_size * args.local_batch_size
         args.num_updates = args.total_episodes // args.batch_size
+        
     return args
 
 
@@ -99,20 +97,21 @@ def main(cfg: DictConfig):
     #Cudnn will us deterministic algorithms, which means that the model will always produce the same output for the same input but it may slow down the training
     torch.backends.cudnn.deterministic = True
 
+    
     policy, tokenizer = trainer.setup_model()
 
     dataset, validation_dataset, temp_dataloader, recompute_log = load_datasets(args)
 
-    MIN_LOGPROB = -500  # example threshold
+    # MIN_LOGPROB = -500  # example threshold
 
-    def filter_by_logprob(example):
-        # Return True if the example's chosen_logprob is above threshold
-        return example["chosen_logprob"] > MIN_LOGPROB
+    # def filter_by_logprob(example):
+    #     # Return True if the example's chosen_logprob is above threshold
+    #     return example["chosen_logprob"] > MIN_LOGPROB
 
-    filtered_dataset = dataset.filter(filter_by_logprob)
+    # filtered_dataset = dataset.filter(filter_by_logprob)
 
-    # Do the same for validation_dataset if you want:
-    filtered_validation_dataset = validation_dataset.filter(filter_by_logprob)
+    # # Do the same for validation_dataset if you want:
+    # filtered_validation_dataset = validation_dataset.filter(filter_by_logprob)
 
     if args.end_idx != -1:
         dataset = dataset.select(range(args.start_idx, args.end_idx))
@@ -128,10 +127,11 @@ def main(cfg: DictConfig):
 
     torch.manual_seed(args.seed)
 
+
     print("PREPARING DATALOADERS")
 
-    dataloader = DataLoader(filtered_dataset, batch_size=args.local_batch_size, shuffle=True, num_workers=4, pin_memory=True)
-    validation_dataloader = DataLoader(filtered_validation_dataset, batch_size=args.per_device_eval_batch_size, shuffle=False)
+    dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True, num_workers=4, pin_memory=True)
+    validation_dataloader = DataLoader(validation_dataset, batch_size=args.per_device_eval_batch_size, shuffle=False)
 
     print("PREPARING ACCELERATOR")
     # After setting up optimizer and scheduler
@@ -139,10 +139,15 @@ def main(cfg: DictConfig):
         policy, optimizer, scheduler, dataloader, validation_dataloader
     )
 
-
     if recompute_log:
+        print("ADDING REF LOGPROBS TO DATASET")
         #Add the logprobs of the initial model to the original dataset
         dataset, validation_dataset = trainer.add_original_logprobs_to_datasets(dataset, validation_dataset, policy, tokenizer)
+        dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True, num_workers=4, pin_memory=True)
+        validation_dataloader = DataLoader(validation_dataset, batch_size=args.per_device_eval_batch_size, shuffle=False)
+        policy, optimizer, scheduler, dataloader, validation_dataloader = accelerator.prepare(
+            policy, optimizer, scheduler, dataloader, validation_dataloader
+        )
     
     data_iter = cycle(dataloader)
   
@@ -176,6 +181,8 @@ def main(cfg: DictConfig):
             policy.train()
             torch.cuda.empty_cache()
 
+        
+        trainer.mode = "training"
         #TRAINING
         try:
             data = next(data_iter)
@@ -184,6 +191,8 @@ def main(cfg: DictConfig):
             data = next(data_iter)
 
         with accelerator.accumulate(policy):
+
+
             
             # Move data to the appropriate device
             data = {key: value.to(device) for key, value in data.items() if isinstance(value, torch.Tensor)}

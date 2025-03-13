@@ -87,8 +87,7 @@ class WandbLogger:
                 wandb.define_metric("training/*", step_metric="actual_step")
                 wandb.define_metric("validation/*", step_metric="actual_step")
 
-                if self.accelerator.state.deepspeed_plugin.deepspeed_config:
-                    
+                if self.accelerator.state.deepspeed_plugin and self.accelerator.state.deepspeed_plugin.deepspeed_config:
                     wandb.config.update({"deepspeed_config": str(self.accelerator.state.deepspeed_plugin.deepspeed_config)})
 
 
@@ -138,40 +137,45 @@ class REFUEL_Logger(WandbLogger):
 
     def log_training(self, step):
         """Logs training metrics."""
+        try:
+            loss = torch.tensor(self.training_loss, device=self.accelerator.device)
+            chosen_logprobs_tensor = torch.cat(self.training_chosen_logprobs)
+            reject_logprobs_tensor = torch.cat(self.training_chosen_logprobs)
 
-        loss = torch.tensor(self.training_loss, device=self.accelerator.device)
-        chosen_logprobs = torch.cat(self.chosen_logprobs)
-        reject_logprobs = torch.cat(self.reject_logprobs)
-
-        loss = self.accelerator.gather(loss).cpu()
-        chosen_logprobs = self.accelerator.gather(self.training_chosen_logprobs).cpu()
-        reject_logprobs = self.accelerator.gather(self.training_reject_logprobs).cpu()
+            loss = self.accelerator.gather(loss).cpu()
+            chosen_logprobs = self.accelerator.gather(chosen_logprobs_tensor).cpu()
+            reject_logprobs = self.accelerator.gather(reject_logprobs_tensor).cpu()
 
 
-        if self.accelerator.is_main_process:
-            #new_logprobs = [[chosen_logprobs1, reject_logprobs1], [chosen_logprobs2, reject_logprobs2], ...]
-            #take the mean of the chosen and reject logprobs
+            if self.accelerator.is_main_process:
+                #new_logprobs = [[chosen_logprobs1, reject_logprobs1], [chosen_logprobs2, reject_logprobs2], ...]
+                #take the mean of the chosen and reject logprobs
 
-            metrics = {
-                "actual_step": step,  # Add this line
-                "training/loss": loss.mean().item(),
-                "training/chosen_logprob": chosen_logprobs.mean().item(),
-                "training/reject_logprob": reject_logprobs.mean().item(),
-                "training/logprob_diff": (chosen_logprobs - reject_logprobs).mean().item(),
-                "training/num_samples": len(chosen_logprobs)
-            }
-            wandb.log(metrics)
+                metrics = {
+                    "actual_step": step,  # Add this line
+                    "training/loss": loss.mean().item(),
+                    "training/chosen_logprob": chosen_logprobs.mean().item(),
+                    "training/reject_logprob": reject_logprobs.mean().item(),
+                    "training/logprob_diff": (chosen_logprobs - reject_logprobs).mean().item(),
+                    "training/num_samples": len(chosen_logprobs)
+                }
+                wandb.log(metrics)
 
-            print(f"Training loss: {loss.mean().item()}")
-            print(f"Training chosen logprob: {chosen_logprobs.mean().item()}")
-            print(f"Training reject logprob: {reject_logprobs.mean().item()}")
+                print(f"Training loss: {loss.mean().item()}")
+                print(f"Training chosen logprob: {chosen_logprobs.mean().item()}")
+                print(f"Training reject logprob: {reject_logprobs.mean().item()}")
 
-        self.init_training_metrics()
+            self.init_training_metrics()
 
-        del loss, chosen_logprobs, reject_logprobs
+            del loss, chosen_logprobs, reject_logprobs
+        except:
+            pass
 
     def log_validation(self, step):
         """Logs validation metrics."""
+
+        print(f"Rank {self.accelerator.local_process_index} has {len(self.reward_diff)} elements in reward_diff")
+
 
         loss_tensor = torch.stack(self.validation_loss)
         loss = self.accelerator.gather(loss_tensor).cpu()
@@ -212,6 +216,7 @@ class REFUEL_Logger(WandbLogger):
 
             print(f"Validation loss: {loss.mean().item()}")
 
+        self.accelerator.wait_for_everyone()
         del loss, chosen_logprobs, reject_logprobs, chosen_logprobs_old, reject_logprobs_old, reward_diff
         self.init_validation_metrics()
 

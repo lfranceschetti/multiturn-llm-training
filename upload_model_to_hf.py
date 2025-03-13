@@ -19,8 +19,8 @@ accelerator = Accelerator()
 
 
 names = [
-  "DPO_1",
-  "DPO_1-936"
+  "clembench_REFUEL_base_1-4000",
+  "clembench_REFUEL_SFT_1-4000"
 
   # "wordle_REFUEL_turnwise-0.001",
 ]
