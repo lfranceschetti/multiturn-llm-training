@@ -102,7 +102,6 @@ def main(cfg: DictConfig):
 
     dataset, validation_dataset, temp_dataloader, recompute_log = load_datasets(args)
 
-    # MIN_LOGPROB = -500  # example threshold
 
     # def filter_by_logprob(example):
     #     # Return True if the example's chosen_logprob is above threshold
