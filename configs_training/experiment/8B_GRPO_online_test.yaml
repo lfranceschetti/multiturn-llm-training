@@ -1,13 +1,14 @@
 
-exp_name: "DPO_test"
-training_method: DPO
+exp_name: "GRPO_online_test"
+training_method: GRPO
 seed: 555134
 track: true
 wandb_project_name: "multiturn_largebatch"
-wandb_dir: "./wandb"
 run_name: null
+wandb_dir: null
 print_sample_output_freq: 500
 upload_interval: 2500
+
 
 # Optimizer settings
 eps: 1e-8
@@ -19,20 +20,24 @@ start_idx: 0
 end_idx: -1
 
 gradient_accumulation_steps: 1
-per_device_train_batch_size: 4
+per_device_train_batch_size: 8
 per_device_eval_batch_size: 16
-total_episodes: 15000
+total_episodes: 7500
+
+train_size: 4000
+test_size: 500
 
  
 # Model paths
 base_model: "meta-llama/Llama-3.2-3B-Instruct"
-output_dir: "/cluster/scratch/mgiulianelli/huggingface/models/"
-dataset: "LuckyLukke/negotio_DPO_onesided_preprocessed"
+output_dir: "/cluster/scratch/fraluca/huggingface/models/"
+dataset: "LuckyLukke/negotio_GRPO"
 
 total_length: 2048
 temperature: 0.9
 
-# DPO specific settings
-dpo:
-  beta: 0.1
-  with_offset: false
+# REFUEL-specific settings
+grpo:
+  G: 8
+  online: False
+  beta: 0.04
