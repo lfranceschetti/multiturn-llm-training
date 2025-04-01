@@ -3,10 +3,10 @@ import json
 import sys
 import socket
 
-def test_conversation(api1_url, api2_url):
+def test_conversation(api0_url, api1_url):
     """Test conversation between two LLM APIs using dynamic hostname"""
     
-    print(f"Testing conversation between {api1_url} and {api2_url}")
+    print(f"Testing conversation between {api0_url} and {api1_url}")
     
     # Create a session that bypasses proxies
     session = requests.Session()
@@ -14,9 +14,9 @@ def test_conversation(api1_url, api2_url):
     
     # First verify both services are running
     try:
-        health1 = session.get(f"{api1_url}/health/")
-        health2 = session.get(f"{api2_url}/health/")
-        print(f"API1 health: {health1.status_code}, API2 health: {health2.status_code}")
+        health1 = session.get(f"{api0_url}/health/")
+        health2 = session.get(f"{api1_url}/health/")
+        print(f"API0 health: {health1.status_code}, API1 health: {health2.status_code}")
         if health1.status_code != 200 or health2.status_code != 200:
             print("Failed health check! One or both APIs are not running.")
             return False
@@ -27,11 +27,11 @@ def test_conversation(api1_url, api2_url):
     # Now test a conversation with the correct payload format
     try:
         # Format conversations as expected by the API
-        convos = ["Explain quantum computing in simple terms.","Write a short poem about artificial intelligence."]
+        convos = ["Lets play a game where the goal is to alternate and count to six together. Use the words of the numbers and write nothing else. e.g. 'One'","Lead a very short but friendly conversation with the other player. The goal is to make the other player smile. Write nothing else."]
         
         
         response = session.post(
-            f"{api1_url}/generate/",
+            f"{api0_url}/generate/",
             json={
                 "prompts": convos,
                 "temperature": 0.7,
@@ -40,7 +40,7 @@ def test_conversation(api1_url, api2_url):
         )
         
         if response.status_code != 200:
-            print(f"Error from API1: {response.status_code}")
+            print(f"Error from API0: {response.status_code}")
             print(response.text)
             return False
             
@@ -66,11 +66,11 @@ if __name__ == "__main__":
         print("Usage: python test_apis.py <api1_host:port> <api2_host:port>")
         sys.exit(1)
         
-    api1_url = f"http://{sys.argv[1]}"
-    api2_url = f"http://{sys.argv[2]}"
+    api0_url = f"http://{sys.argv[1]}"
+    api1_url = f"http://{sys.argv[2]}"
     
 
-    success = test_conversation(api1_url, api2_url)
+    success = test_conversation(api0_url, api1_url)
     
     if success:
         print("\nTest passed! The APIs are communicating correctly.")
