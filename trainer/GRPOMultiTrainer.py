@@ -87,68 +87,7 @@ class GRPOMultiTrainer(GRPOTrainer):
             **kwargs,
         )
 
-    def tokenize_messages(self, messages, max_length=2048):
-        """
-        Convert messages to token IDs and attention masks, identifying which tokens are
-        from the assistant (for reward calculation and loss computation).
-        
-        Args:
-            messages: List of message dictionaries with 'role' and 'content'
-            tokenizer: Tokenizer to use
-            max_length: Maximum sequence length
-            
-        Returns:
-            Tuple of (token_ids, attention_mask, assistant_mask)
-        """
-        # Get the full tokenized conversation
 
-        print("GETTING TOKEN IDS for msgs", messages)
-        token_ids = self.processing_class.apply_chat_template(
-            messages, 
-            tokenize=True, 
-            add_generation_prompt=False, 
-            padding='max_length', 
-            max_length=max_length,
-            return_tensors="pt"
-        )
-        
-        # Create the attention mask (1 for tokens, 0 for padding)
-        attention_mask = (token_ids != self.processing_class.pad_token_id).int()
-        
-        # Create assistant mask (1 for assistant tokens, 0 for others)
-        assistant_mask = torch.zeros_like(token_ids)
-        
-        # Process message by message to identify assistant portions
-        current_position = 0
-
-
-        for msg in messages:
-            # Tokenize just this message with the chat template
-            msg_tokens = self.processing_class.apply_chat_template(
-                [msg], 
-                tokenize=True, 
-                add_generation_prompt=False,
-                return_tensors="pt"
-            )
-            msg_length = msg_tokens.size(1)
-
-            print("MSG LENGTH", msg_length)
-            
-            # If we would exceed the max length, truncate
-            if current_position + msg_length > max_length:
-                msg_length = max_length - current_position
-                if msg_length <= 0:
-                    break
-            
-            # Mark assistant tokens
-            if msg["role"] == "assistant":
-                assistant_mask[0, current_position:current_position + msg_length] = 1
-            
-            current_position += msg_length
-            if current_position >= max_length:
-                break
-        
-        return token_ids, attention_mask, assistant_mask
     
     @profiling_decorator
     def _get_per_token_logps(self, model, input_ids, attention_mask, assistant_mask):
@@ -179,16 +118,6 @@ class GRPOMultiTrainer(GRPOTrainer):
             torch.distributed.barrier()
             print(f"[Rank {rank}] After tiny test barrier")
 
-        with torch.no_grad():
-            tiny_input = torch.ones((1, 10), dtype=torch.long, device="cuda:0")
-            tiny_mask = torch.ones((1, 10), device="cuda:0")
-            try:
-                tiny_output = model(input_ids=tiny_input, attention_mask=tiny_mask)
-                print("Tiny test passed")
-                print(tiny_output)
-            except Exception as e:
-                print("Tiny test failed")
-                print(e)
 
         print("input_ids shape:", input_ids.shape)
         print("attention_mask shape:", attention_mask.shape)
@@ -276,11 +205,11 @@ class GRPOMultiTrainer(GRPOTrainer):
 
         if self.accelerator.is_main_process:
 
-            ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
+            # ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
 
             with profiling_context(self, "vLLM.generate"):
-                full_conversations = self.vllm_client.generate(
-                    prompts=ordered_set_of_prompts,
+                client_response = self.vllm_client.generate(
+                    prompts=all_prompts_text,
                     n=self.num_generations,
                     repetition_penalty=self.repetition_penalty,
                     temperature=self.temperature,
@@ -290,17 +219,27 @@ class GRPOMultiTrainer(GRPOTrainer):
                     max_tokens=self.max_completion_length,
                     guided_decoding_regex=self.guided_decoding_regex,
             )
-                
+                full_conversations = client_response["conversations"]
+                token_ids_list = client_response["token_ids"]
+                attention_mask_list = client_response["attention_masks"]
+                assistant_mask_list = client_response["assistant_masks"]
                 print("FULL CONVERSATIONS", full_conversations)
 
         else:
             full_conversations = [None] * len(all_prompts_text)
+            token_ids_list = [None] * len(all_prompts_text)
+            attention_mask_list = [None] * len(all_prompts_text)
+            assistant_mask_list = [None] * len(all_prompts_text)
+
 
         print(f"[Rank {rank}] full_conversations length: {len(full_conversations)}, example: {full_conversations[:1]}")
 
         print(f"[Rank {rank}] Before broadcast")
 
         full_conversations = broadcast_object_list(full_conversations, from_process=0)
+        token_ids_list = broadcast_object_list(token_ids_list, from_process=0)
+        attention_mask_list = broadcast_object_list(attention_mask_list, from_process=0)
+        assistant_mask_list = broadcast_object_list(assistant_mask_list, from_process=0)
 
         print(f"[Rank {rank}] After broadcast")
 
@@ -311,35 +250,20 @@ class GRPOMultiTrainer(GRPOTrainer):
 
         full_conversations = full_conversations[process_slice]
 
+        # Convert lists to tensors before stacking them
+        token_ids_tensors = [torch.tensor(ids, device=device) for ids in token_ids_list[process_slice]]
+        attention_mask_tensors = [torch.tensor(mask, device=device) for mask in attention_mask_list[process_slice]]
+        assistant_mask_tensors = [torch.tensor(mask, device=device) for mask in assistant_mask_list[process_slice]]
+
+        token_ids = torch.stack(token_ids_tensors, dim=0)
+        attention_mask = torch.stack(attention_mask_tensors, dim=0)
+        assistant_mask = torch.stack(assistant_mask_tensors, dim=0)
+
         #PRINT STARTING TOKENIZATION IN RANK x
-        print("Starting tokenization in rank", self.accelerator.process_index)
-
-        token_ids_list = []
-        attention_mask_list = []
-        assistant_mask_list = []
-
-        for i, conversation in enumerate(full_conversations):
-            print("Tokenizing conversation", i)
-            token_ids, attention_mask, assistant_mask = self.tokenize_messages(conversation)
-
-            print("TOKEN IDS")
-            print(token_ids)
-            print("ATTENTION MASK")
-            print(attention_mask)
-            print("ASSISTANT MASK")
-            print(assistant_mask)
-            token_ids_list.append(token_ids)
-            attention_mask_list.append(attention_mask)
-            assistant_mask_list.append(assistant_mask)
-
-        print("TOKENIZATION complete")
-        # Stack all tensors
-        token_ids = torch.cat(token_ids_list, dim=0).to(device)
-        attention_mask = torch.cat(attention_mask_list, dim=0).to(device)
-        assistant_mask = torch.cat(assistant_mask_list, dim=0).to(device)
-
+        print("Number of Items on rank:", self.accelerator.process_index, " : ", len(full_conversations))
         
         print("Calculating logprobs")
+
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
             # computation here, and use per_token_logps.detach() instead.
@@ -427,7 +351,6 @@ class GRPOMultiTrainer(GRPOTrainer):
                         completions_to_log,
                         rewards_to_log,
                         self.state.global_step,
-                        self.num_completions_to_print,
                     )
                 if self.args.report_to and "wandb" in self.args.report_to and wandb.run is not None: # type: ignore
                     import pandas as pd
@@ -474,6 +397,9 @@ class GRPOMultiTrainer(GRPOTrainer):
         attention_mask = inputs["attention_mask"]
         assistant_mask = inputs["assistant_mask"]
 
+        
+
+
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, assistant_mask)
 
         # Compute the KL divergence between the model and the reference model
@@ -495,17 +421,21 @@ class GRPOMultiTrainer(GRPOTrainer):
         per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         if self.beta != 0.0:
             per_token_loss = per_token_loss + self.beta * per_token_kl
-        loss = (per_token_loss * assistant_mask).sum() / assistant_mask.sum()
+
+
+        shifted_assistant_mask = assistant_mask[:, 1:]  # Shape: [B, L-1]
+
+        loss = (per_token_loss * shifted_assistant_mask).sum() / shifted_assistant_mask.sum()
 
         # Log the metrics
         mode = "eval" if self.control.should_evaluate else "train"
 
         if self.beta != 0.0:
-            mean_kl = (per_token_kl * assistant_mask).sum() / assistant_mask.sum()
+            mean_kl = (per_token_kl * shifted_assistant_mask).sum() / shifted_assistant_mask.sum()
             self._metrics[mode]["kl"].append(self.accelerator.gather_for_metrics(mean_kl).mean().item())
 
         is_clipped = (coef_1 < (1 - self.epsilon_low)) | (coef_1 > (1 + self.epsilon_high))
-        clip_ratio = (is_clipped * assistant_mask).sum() / assistant_mask.sum()
+        clip_ratio = (is_clipped * shifted_assistant_mask).sum() / shifted_assistant_mask.sum()
         self._metrics[mode]["clip_ratio"].append(self.accelerator.gather_for_metrics(clip_ratio).mean().item())
 
 

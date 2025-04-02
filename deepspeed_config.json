@@ -16,8 +16,8 @@
     "params": {
         "warmup_min_lr": 0,
         "warmup_max_lr": 1e-06,
-        "warmup_num_steps": 20,
-        "total_num_steps": 1000
+        "warmup_num_steps": 10,
+        "total_num_steps": 250
     }
   },
   "zero_optimization": {

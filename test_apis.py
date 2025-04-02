@@ -27,8 +27,8 @@ def test_conversation(api0_url, api1_url):
     # Now test a conversation with the correct payload format
     try:
         # Format conversations as expected by the API
-        convos = ["Lets play a game where the goal is to alternate and count to six together. Use the words of the numbers and write nothing else. e.g. 'One'","Lead a very short but friendly conversation with the other player. The goal is to make the other player smile. Write nothing else."]
-        
+        convos = ["Lets count together. You should just say the next following number as a word and nothing else: Example: 'One' and then the next person says 'Two' and so on. I will start: One",
+                "Keep up a brief conversation about the weather. I will start: It's a beautiful day today."]
         
         response = session.post(
             f"{api0_url}/generate/",
@@ -48,11 +48,21 @@ def test_conversation(api0_url, api1_url):
         print("\nResponse result:")
         print(result)
         
-        # Handle the response based on the actual structure returned
-        if "responses" in result:
-            for i, response_text in enumerate(result["responses"]):
-                print(f"\nResponse {i+1}:")
-                print(response_text)
+        # Handle the response based on the new structure
+        if "conversations" in result:
+            for i, conversation in enumerate(result["conversations"]):
+                print(f"\nConversation {i+1}:")
+                for j, message in enumerate(conversation):
+                    print(f"  {message['role']}: {message['content']}")
+            
+            # If you want to check the token data
+            if "token_ids" in result and "assistant_masks" in result:
+                print("\nToken data:")
+                print(f"Number of conversations with token data: {len(result['token_ids'])}")
+                
+                for i in range(len(result['token_ids'])):
+                    assistant_tokens_count = sum(sum(mask) for mask in result['assistant_masks'][i])
+                    print(f"Conversation {i+1} assistant tokens: {assistant_tokens_count}")
         
         return True
     except Exception as e:

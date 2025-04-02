@@ -5,7 +5,7 @@ notebook_dir = os.getcwd()
 sys.path.append(os.path.abspath(os.path.join(notebook_dir, '..', 'llm-negotiations'))) 
 from envs.negotiation_env import NegotiationEnv 
 from trainer.GRPOMultiTrainer import GRPOMultiTrainer
-from trainer.utils import get_default_grpo_config 
+from trl import GRPOConfig
 import hydra
 from omegaconf import DictConfig, open_dict, OmegaConf 
 from simulator.games import Game
@@ -14,7 +14,6 @@ import torch
 from simulator.games import Game
 #AutoTokenizer
 from transformers import AutoTokenizer, AutoModelForCausalLM
-
 
 @hydra.main(version_base=None, config_path="../llm-negotiations/configs", config_name="inference_root")
 def main(cfg: DictConfig):
@@ -39,8 +38,8 @@ def main(cfg: DictConfig):
 
     print("Negotiation Environment created")
 
-    train_dataset = negotiation_env.create_dataset(size=8000)
-    eval_dataset = negotiation_env.create_dataset(size=400)
+    train_dataset = negotiation_env.create_dataset(size=2000)
+    eval_dataset = negotiation_env.create_dataset(size=100)
 
     reward_functions = negotiation_env.get_reward_functions()
 
@@ -49,19 +48,54 @@ def main(cfg: DictConfig):
     num_gpus = torch.cuda.device_count()
 
     vllm_server_host = os.environ.get("VLLM_SERVER_HOST", "0.0.0.0")
-    vllm_server_port = int(os.environ.get("VLLM_SERVER_PORT", 8000))    
-    training_args = get_default_grpo_config(run_name, vllm_server_host, vllm_server_port, num_gpus=num_gpus)
+    vllm_server_port = int(os.environ.get("VLLM_SERVER_PORT", 8000))
+
+    training_args = GRPOConfig(
+        output_dir=f"/cluster/scratch/fraluca/huggingface/models/{run_name}",
+        run_name=run_name,
+        learning_rate=1e-6,
+        lr_scheduler_type="constant_with_warmup",
+        warmup_steps=10,
+        num_train_epochs=1,
+        bf16=True,
+        adam_beta1=0.9,
+        adam_beta2=0.99,
+        max_grad_norm=0.1,
+        num_iterations=1,
+        max_prompt_length=1024,
+        max_completion_length=200,
+        per_device_train_batch_size=2,
+        num_generations=(2 * num_gpus - 2 if num_gpus > 1 else 2),
+        gradient_accumulation_steps=4,
+        gradient_checkpointing=True,
+        save_strategy="steps",
+        save_steps=200,
+        save_only_model=True,
+        use_vllm=True,
+        vllm_gpu_memory_utilization=0.7 if num_gpus > 1 else 0.3,
+        logging_steps=1,
+        log_on_each_node=False,
+        log_completions=True,
+        report_to="wandb",
+        vllm_server_host=vllm_server_host,
+        vllm_server_port=vllm_server_port,
+        deepspeed="/cluster/home/fraluca/negotio2/multiturn-llm-training/deepspeed_config.json",
+    )
+
+
+    
+    # get_default_grpo_config(run_name, vllm_server_host, vllm_server_port, num_gpus=num_gpus)
 
     print("Training Args:\n", training_args)
 
     #Model that should be trained
-    model = "meta-llama/Llama-3.2-1B-Instruct"
+    model = "meta-llama/Llama-3.1-8B-Instruct"
 
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.2-1B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
     tokenizer.pad_token = tokenizer.eos_token
 
     model = AutoModelForCausalLM.from_pretrained(
-        "meta-llama/Llama-3.2-1B-Instruct",
+        "meta-llama/Llama-3.1-8B-Instruct",
         # quantization_config=bnb_config,
         trust_remote_code=True,
         torch_dtype=torch.float16,

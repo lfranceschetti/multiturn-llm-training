@@ -45,7 +45,7 @@ def get_default_grpo_config(run_name: str, vllm_server_host: str, vllm_server_po
         max_grad_norm=0.1,
         num_iterations=1,
         max_prompt_length=1024,
-        max_completion_length=1024,
+        max_completion_length=200,
         per_device_train_batch_size=2,
         num_generations=(2 * num_gpus - 2 if num_gpus > 1 else 2),
         gradient_accumulation_steps=4,
