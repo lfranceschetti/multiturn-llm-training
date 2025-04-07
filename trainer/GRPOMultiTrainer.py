@@ -104,35 +104,18 @@ class GRPOMultiTrainer(GRPOTrainer):
             Log probabilities for the assistant-generated tokens
         """
         # Get logits from the model for the entire sequence
-        print("Using model", model)
-
         rank = self.accelerator.process_index
     
         # Add rank to all print statements
         print(f"[Rank {rank}] Entering _get_per_token_logps")
-        print(f"[Rank {rank}] Using model {model}")
 
         # First synchronize before tiny test
         if torch.distributed.is_initialized():
-            print(f"[Rank {rank}] Before tiny test barrier")
             torch.distributed.barrier()
-            print(f"[Rank {rank}] After tiny test barrier")
 
-
-        print("input_ids shape:", input_ids.shape)
-        print("attention_mask shape:", attention_mask.shape)
-        print("input_ids device:", input_ids.device)
-        print("attention_mask device:", attention_mask.device)
-        print("input_ids dtype:", input_ids.dtype)
-        print("attention_mask dtype:", attention_mask.dtype)
-        print("First few values of input_ids:", input_ids[0, :10])  # First 10 tokens of first item in batch
-        print("First few values of attention_mask:", attention_mask[0, :10])  # First 10 mask values of first item in batch
 
         model_device = next(model.parameters()).device
-        print(f"Model is on device: {model_device}")
-        print(f"input_ids is on device: {input_ids.device}")
-        print(f"attention_mask is on device: {attention_mask.device}")
-        print(f"assistant_mask is on device: {assistant_mask.device}")
+ 
 
         if input_ids.device != model_device:
             print(f"Moving input_ids from {input_ids.device} to {model_device}")
@@ -143,12 +126,9 @@ class GRPOMultiTrainer(GRPOTrainer):
             attention_mask = attention_mask.to(model_device)
         
         # Get logits from the model for the entire sequence
-        print("Starting model forward pass")
         outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        print("Completed model forward pass")
         logits = outputs.logits  # Shape: [B, L, V]
 
-        print("LOGITS", logits)
         
         # Shift logits left and input_ids right to align
         # This matches each token's logit with the next token's ID (standard LM setup)
@@ -159,19 +139,30 @@ class GRPOMultiTrainer(GRPOTrainer):
         # Divide logits by temperature
         logits = logits / self.temperature
         
-        print("Calculating per token")
+        print(f"[Rank {rank}] Before selective_log_softmax:")
+        print(f"[Rank {rank}] Logits shape: {logits.shape}")
+        print(f"[Rank {rank}] Assistant mask sum: {shifted_assistant_mask.sum().item()} out of {shifted_assistant_mask.numel()}")
+        print(f"[Rank {rank}] Assistant mask percentage: {100 * shifted_assistant_mask.sum() / shifted_assistant_mask.numel():.2f}%")
+        
         # Compute log probabilities for each token
         per_token_logps = selective_log_softmax(logits, shifted_input_ids)
-
-        print("PER TOKEN LOGPROBs", per_token_logps)
-
         
+        # Apply the assistant mask
+        masked_log_probs = per_token_logps * shifted_assistant_mask
 
-        # Apply the assistant mask to keep only assistant-generated tokens
-        # Replace zeros from mask with -inf to properly ignore them in calculations
-        masked_log_probs = per_token_logps.masked_fill(shifted_assistant_mask == 0, float('-inf'))
-
-        print("MASKED LOGPROBS", masked_log_probs)
+        print(f"[Rank {rank}] After selective_log_softmax and masking:")
+        print(f"[Rank {rank}] Non-zero logprobs: {torch.count_nonzero(masked_log_probs)}")
+        non_zero_mask = masked_log_probs != 0
+        if non_zero_mask.any():
+            print(f"[Rank {rank}] Non-zero logprobs mean: {masked_log_probs[non_zero_mask].mean():.4f}")
+            print(f"[Rank {rank}] Non-zero logprobs std: {masked_log_probs[non_zero_mask].std():.4f}")
+            print(f"[Rank {rank}] Non-zero logprobs min: {masked_log_probs[non_zero_mask].min():.4f}")
+            print(f"[Rank {rank}] Non-zero logprobs max: {masked_log_probs[non_zero_mask].max():.4f}")
+        
+        # Verify mask application
+        print(f"[Rank {rank}] Mask verification:")
+        print(f"[Rank {rank}] Tokens that should be masked: {(shifted_assistant_mask == 0).sum().item()}")
+        print(f"[Rank {rank}] Actually masked (zero) tokens: {(masked_log_probs == 0).sum().item()}")
         
         return masked_log_probs
 
@@ -198,6 +189,9 @@ class GRPOMultiTrainer(GRPOTrainer):
         # Gather the original prompts in message dict form, not the text form
         all_prompts_text = gather_object(prompts)
 
+        prompts_2 = [x["prompt_2"] for x in inputs] # type: ignore
+        all_prompts_text_2 = gather_object(prompts_2)
+
         rank = self.accelerator.process_index
     
         # Add rank to all print statements
@@ -210,6 +204,7 @@ class GRPOMultiTrainer(GRPOTrainer):
             with profiling_context(self, "vLLM.generate"):
                 client_response = self.vllm_client.generate(
                     prompts=all_prompts_text,
+                    prompts_2=all_prompts_text_2,
                     n=self.num_generations,
                     repetition_penalty=self.repetition_penalty,
                     temperature=self.temperature,

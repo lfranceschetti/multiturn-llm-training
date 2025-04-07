@@ -12,8 +12,17 @@ from simulator.games import Game
 from helpers.utils import unpack_nested_yaml, fill_defaults, get_inference_root_overrides
 import torch
 from simulator.games import Game
+from transformers import BitsAndBytesConfig
+from peft import LoraConfig
+
 #AutoTokenizer
 from transformers import AutoTokenizer, AutoModelForCausalLM
+
+
+#https://github.com/huggingface/peft/blob/main/examples/sft/README.md
+
+#Current training settings are following the following tutorial:
+#http://github.com/huggingface/peft/blob/main/examples/sft/utils.py
 
 @hydra.main(version_base=None, config_path="../llm-negotiations/configs", config_name="inference_root")
 def main(cfg: DictConfig):
@@ -58,14 +67,11 @@ def main(cfg: DictConfig):
         warmup_steps=10,
         num_train_epochs=1,
         bf16=True,
-        adam_beta1=0.9,
-        adam_beta2=0.99,
-        max_grad_norm=0.1,
         num_iterations=1,
-        max_prompt_length=1024,
+        max_prompt_length=1600,
         max_completion_length=200,
-        per_device_train_batch_size=2,
-        num_generations=(2 * num_gpus - 2 if num_gpus > 1 else 2),
+        per_device_train_batch_size=4,
+        num_generations=8,
         gradient_accumulation_steps=4,
         gradient_checkpointing=True,
         save_strategy="steps",
@@ -79,28 +85,47 @@ def main(cfg: DictConfig):
         report_to="wandb",
         vllm_server_host=vllm_server_host,
         vllm_server_port=vllm_server_port,
-        deepspeed="/cluster/home/fraluca/negotio2/multiturn-llm-training/deepspeed_config.json",
+        #deepspeed="/cluster/home/fraluca/negotio2/multiturn-llm-training/deepspeed_config.json",
     )
 
-
     
+    # https://huggingface.co/docs/peft/accelerate/deepspeed
+    # bnb_config = BitsAndBytesConfig(
+    #     load_in_4bit=True,
+    #     bnb_4bit_quant_type="nf4",
+    #     bnb_4bit_compute_dtype=torch.float16,
+    #     bnb_4bit_use_double_quant=True,
+    # )
     # get_default_grpo_config(run_name, vllm_server_host, vllm_server_port, num_gpus=num_gpus)
+
+    bnb_config = None
 
     print("Training Args:\n", training_args)
 
     #Model that should be trained
-    model = "meta-llama/Llama-3.1-8B-Instruct"
+    model_name = "meta-llama/Llama-3.1-8B-Instruct"
 
-    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-3.1-8B-Instruct")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
 
+
+
     model = AutoModelForCausalLM.from_pretrained(
-        "meta-llama/Llama-3.1-8B-Instruct",
-        # quantization_config=bnb_config,
+        model_name,
+        quantization_config=bnb_config,
         trust_remote_code=True,
         torch_dtype=torch.float16,
-        # device_map=device_map,
        )
+
+
+    peft_config = LoraConfig(
+        lora_alpha=16,
+        lora_dropout=0.1,
+        r=8,
+        bias="none",
+        task_type="CAUSAL_LM",
+        target_modules="all-linear"
+    )
 
     trainer = GRPOMultiTrainer(
         model=model,
@@ -108,11 +133,14 @@ def main(cfg: DictConfig):
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
-        processing_class=tokenizer
-
+        processing_class=tokenizer,
+        peft_config=peft_config
     )
 
     trainer.train()
+
+    trainer.save_model()
+
 
 if __name__ == "__main__":
     main()
