@@ -34,6 +34,7 @@ def test_conversation(api0_url, api1_url):
             f"{api0_url}/generate/",
             json={
                 "prompts": convos,
+                "prompts_2": convos,
                 "temperature": 0.7,
                 "max_tokens": 100
             }

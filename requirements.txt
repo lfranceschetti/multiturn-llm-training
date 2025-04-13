@@ -13,3 +13,4 @@ hydra-core==1.3.2
 fastapi
 uvicorn
 pydantic
+peft

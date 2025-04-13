@@ -15,6 +15,8 @@ import torch
 from simulator.games import Game
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig
+from datasets import Dataset
+
 
 #AutoTokenizer
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -24,6 +26,31 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 #Current training settings are following the following tutorial:
 #http://github.com/huggingface/peft/blob/main/examples/sft/utils.py
+
+
+def get_reward_functions():
+    """
+    Returns a list of reward functions to be used by the GRPO trainer.
+    """
+    
+    def negotiation_payoff_reward(prompts, completions, **kwargs):
+        rewards = []
+        # print("GAME CONFIGS", game_configs)
+        
+        for i, messages in enumerate(completions):
+            reward = 0
+            for message in messages:
+                if message["role"] == "assistant":
+                    try:
+                        reward += int(message["content"])
+                    except:
+                        reward += 0
+                
+            rewards.append(reward)
+                
+        return rewards
+    
+    return [negotiation_payoff_reward]
 
 @hydra.main(version_base=None, config_path="../llm-negotiations/configs", config_name="inference_root")
 def main(cfg: DictConfig):
@@ -39,7 +66,8 @@ def main(cfg: DictConfig):
 
     config = cfg.experiment
 
-    model_name = "meta-llama/Llama-3.1-8B-Instruct"
+    model_name = "meta-llama/Llama-3.2-1B-Instruct"
+
 
     config_dict = OmegaConf.to_container(config, resolve=True)
     print("Config:\n", json.dumps(config_dict, indent=4))
@@ -48,13 +76,29 @@ def main(cfg: DictConfig):
 
     print("Negotiation Environment created")
 
-    train_dataset = negotiation_env.create_dataset(size=2000)
-    eval_dataset = negotiation_env.create_dataset(size=100)
+    prompt = "Please generate a random number between 0 and 100. Only respond with the number, nothing else."
+    prompt_2 = "Please generate a random number between 0 and 100. Only respond with the number, nothing else."
+    game_config = { }
 
-    reward_functions = negotiation_env.get_reward_functions()
+    samples = []
+    for _ in range(2000):
+        samples.append({
+            "prompt": prompt,  # This should be a list of message dicts
+            "prompt_2": prompt_2,
+            "game_config": game_config
+        })
+
+    # Create a Hugging Face Dataset
+    dataset = Dataset.from_list(samples)
+
+
+    train_dataset = dataset
+    eval_dataset =  dataset[:100]
+
+    reward_functions = get_reward_functions()
 
     # notable defaults: lr = 1e-6, max_grad_norm = 0.01, constant lr 10 warmup steps, 1024 tokens in+out
-    run_name = "grpo_negotiation_test_1"
+    run_name = "grpo_1B_numbers"
     num_gpus = torch.cuda.device_count()
 
     vllm_server_host = os.environ.get("VLLM_SERVER_HOST", "0.0.0.0")
@@ -63,7 +107,7 @@ def main(cfg: DictConfig):
     training_args = GRPOConfig(
         output_dir=f"/cluster/scratch/mgiulianelli/huggingface/models/{run_name}",
         run_name=run_name,
-        learning_rate=2e-4,
+        learning_rate=1e-6,
         lr_scheduler_type="constant_with_warmup",
         warmup_steps=10,
         num_train_epochs=1,
@@ -119,7 +163,7 @@ def main(cfg: DictConfig):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
-        peft_config=peft_config
+        # peft_config=peft_config
     )
 
     trainer.train()

@@ -5,8 +5,7 @@ import argparse
 notebook_dir = os.getcwd() 
 sys.path.append(os.path.abspath(os.path.join(notebook_dir, '..', 'llm-negotiations'))) 
 from envs.negotiation_env import NegotiationEnv 
-from trainer.GRPOMultiTrainer import GRPOMultiTrainer
-from trl import GRPOConfig
+from trl import GRPOConfig, GRPOTrainer
 import hydra
 from omegaconf import DictConfig, open_dict, OmegaConf 
 from simulator.games import Game
@@ -15,6 +14,8 @@ import torch
 from simulator.games import Game
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig
+from datasets import Dataset
+
 
 #AutoTokenizer
 from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -24,6 +25,45 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 
 #Current training settings are following the following tutorial:
 #http://github.com/huggingface/peft/blob/main/examples/sft/utils.py
+
+
+# def get_reward_functions():
+#     """
+#     Returns a list of reward functions to be used by the GRPO trainer.
+#     """
+    
+#     def negotiation_payoff_reward(prompts, completions, **kwargs):
+#         rewards = []
+#         # print("GAME CONFIGS", game_configs)
+        
+#         for i, cmpl in enumerate(completions):
+#             reward = 0
+#             number_of_letters = len(cmpl)
+#             if number_of_letters < 10:
+#                 reward += 10
+#             try:
+#                 reward += int(cmpl)
+#             except:
+#                 reward += 0
+                
+#             rewards.append(reward)
+                
+#         return rewards
+    
+#     return [negotiation_payoff_reward]
+
+def get_reward_functions():
+    """
+    Returns a list of reward functions to be used by the GRPO trainer.
+    """
+    
+    def reward_len(completions,**kwargs):
+        return [-abs(20 - len(completion)) for completion in completions]
+
+    
+    return [reward_len]
+
+
 
 @hydra.main(version_base=None, config_path="../llm-negotiations/configs", config_name="inference_root")
 def main(cfg: DictConfig):
@@ -39,7 +79,8 @@ def main(cfg: DictConfig):
 
     config = cfg.experiment
 
-    model_name = "meta-llama/Llama-3.1-8B-Instruct"
+    model_name = "meta-llama/Llama-3.2-1B-Instruct"
+
 
     config_dict = OmegaConf.to_container(config, resolve=True)
     print("Config:\n", json.dumps(config_dict, indent=4))
@@ -48,13 +89,29 @@ def main(cfg: DictConfig):
 
     print("Negotiation Environment created")
 
-    train_dataset = negotiation_env.create_dataset(size=2000)
-    eval_dataset = negotiation_env.create_dataset(size=100)
+    prompt = "Please generate a random number between 0 and 100. Only respond with the number, nothing else."
+    prompt_2 = "Please generate a random number between 0 and 100. Only respond with the number, nothing else."
+    game_config = { }
 
-    reward_functions = negotiation_env.get_reward_functions()
+    samples = []
+    for _ in range(2000):
+        samples.append({
+            "prompt": prompt,  # This should be a list of message dicts
+            "prompt_2": prompt_2,
+            "game_config": game_config
+        })
+
+    # Create a Hugging Face Dataset
+    dataset = Dataset.from_list(samples)
+
+
+    train_dataset = dataset
+    eval_dataset =  dataset[:100]
+
+    reward_functions = get_reward_functions()
 
     # notable defaults: lr = 1e-6, max_grad_norm = 0.01, constant lr 10 warmup steps, 1024 tokens in+out
-    run_name = "grpo_negotiation_test_1"
+    run_name = "grpo_1B_numbers_single"
     num_gpus = torch.cuda.device_count()
 
     vllm_server_host = os.environ.get("VLLM_SERVER_HOST", "0.0.0.0")
@@ -112,9 +169,9 @@ def main(cfg: DictConfig):
         target_modules="all-linear"
     )
 
-    trainer = GRPOMultiTrainer(
+    trainer = GRPOTrainer( 
         model=model,
-        reward_funcs=reward_functions, 
+        reward_funcs=reward_functions,
         args=training_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
