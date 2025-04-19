@@ -33,7 +33,7 @@ def get_reward_functions():
     Returns a list of reward functions to be used by the GRPO trainer.
     """
     
-    def negotiation_payoff_reward(prompts, completions, **kwargs):
+    def sum_of_letters(prompts, completions, **kwargs):
         rewards = []
         # print("GAME CONFIGS", game_configs)
         
@@ -42,7 +42,7 @@ def get_reward_functions():
             for message in messages:
                 if message["role"] == "assistant":
                     try:
-                        reward += int(message["content"])
+                        reward -= abs(20-len(message["content"]))
                     except:
                         reward += 0
                 
@@ -50,7 +50,7 @@ def get_reward_functions():
                 
         return rewards
     
-    return [negotiation_payoff_reward]
+    return [sum_of_letters]
 
 @hydra.main(version_base=None, config_path="../llm-negotiations/configs", config_name="inference_root")
 def main(cfg: DictConfig):
@@ -76,8 +76,8 @@ def main(cfg: DictConfig):
 
     print("Negotiation Environment created")
 
-    prompt = "Please generate a random number between 0 and 100. Only respond with the number, nothing else."
-    prompt_2 = "Please generate a random number between 0 and 100. Only respond with the number, nothing else."
+    prompt = "Lets write a story about a cat. Keep it short. There once was a cat named..."
+    prompt_2 = "Lets write a story about a cat. Keep it short. There once was a cat named..."
     game_config = { }
 
     samples = []
@@ -107,7 +107,7 @@ def main(cfg: DictConfig):
     training_args = GRPOConfig(
         output_dir=f"/cluster/scratch/mgiulianelli/huggingface/models/{run_name}",
         run_name=run_name,
-        learning_rate=1e-6,
+        learning_rate=2e-4,
         lr_scheduler_type="constant_with_warmup",
         warmup_steps=10,
         num_train_epochs=1,
@@ -116,7 +116,7 @@ def main(cfg: DictConfig):
         max_prompt_length=1600,
         max_completion_length=200,
         per_device_train_batch_size=4,
-        num_generations=8,
+        num_generations=4,
         gradient_accumulation_steps=4,
         gradient_checkpointing=True,
         save_strategy="steps",
@@ -163,7 +163,7 @@ def main(cfg: DictConfig):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
-        # peft_config=peft_config
+        peft_config=peft_config
     )
 
     trainer.train()

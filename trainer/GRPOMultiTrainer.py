@@ -103,31 +103,20 @@ class GRPOMultiTrainer(GRPOTrainer):
         Returns:
             Log probabilities for the assistant-generated tokens
         """
-        # Get logits from the model for the entire sequence
         rank = self.accelerator.process_index
     
-        # Add rank to all print statements
-        print(f"[Rank {rank}] Entering _get_per_token_logps")
-
-        # First synchronize before tiny test
-        if torch.distributed.is_initialized():
-            torch.distributed.barrier()
-
-
-        model_device = next(model.parameters()).device
- 
-
-        if input_ids.device != model_device:
-            print(f"Moving input_ids from {input_ids.device} to {model_device}")
-            input_ids = input_ids.to(model_device)
+        # Shift assistant_mask right to align with the next token prediction
+        shifted_assistant_mask = assistant_mask[:, 1:]  # Shape: [B, L-1]
         
-        if attention_mask.device != model_device:
-            print(f"Moving attention_mask from {attention_mask.device} to {model_device}")
-            attention_mask = attention_mask.to(model_device)
+        # Early check - if there are no assistant tokens, return zeros and avoid computation
+        if shifted_assistant_mask.sum().item() == 0:
+            return torch.zeros(
+                (input_ids.size(0), shifted_assistant_mask.size(1)), 
+                device=input_ids.device
+            )
         
         # Get logits from the model for the entire sequence
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
-        logits = outputs.logits  # Shape: [B, L, V]
+        logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
 
         
         # Shift logits left and input_ids right to align
@@ -139,10 +128,8 @@ class GRPOMultiTrainer(GRPOTrainer):
         # Divide logits by temperature
         logits = logits / self.temperature
         
-        print(f"[Rank {rank}] Before selective_log_softmax:")
-        print(f"[Rank {rank}] Logits shape: {logits.shape}")
+
         print(f"[Rank {rank}] Assistant mask sum: {shifted_assistant_mask.sum().item()} out of {shifted_assistant_mask.numel()}")
-        print(f"[Rank {rank}] Assistant mask percentage: {100 * shifted_assistant_mask.sum() / shifted_assistant_mask.numel():.2f}%")
         
         # Compute log probabilities for each token
         per_token_logps = selective_log_softmax(logits, shifted_input_ids)
@@ -150,20 +137,6 @@ class GRPOMultiTrainer(GRPOTrainer):
         # Apply the assistant mask
         masked_log_probs = per_token_logps * shifted_assistant_mask
 
-        print(f"[Rank {rank}] After selective_log_softmax and masking:")
-        print(f"[Rank {rank}] Non-zero logprobs: {torch.count_nonzero(masked_log_probs)}")
-        non_zero_mask = masked_log_probs != 0
-        if non_zero_mask.any():
-            print(f"[Rank {rank}] Non-zero logprobs mean: {masked_log_probs[non_zero_mask].mean():.4f}")
-            print(f"[Rank {rank}] Non-zero logprobs std: {masked_log_probs[non_zero_mask].std():.4f}")
-            print(f"[Rank {rank}] Non-zero logprobs min: {masked_log_probs[non_zero_mask].min():.4f}")
-            print(f"[Rank {rank}] Non-zero logprobs max: {masked_log_probs[non_zero_mask].max():.4f}")
-        
-        # Verify mask application
-        print(f"[Rank {rank}] Mask verification:")
-        print(f"[Rank {rank}] Tokens that should be masked: {(shifted_assistant_mask == 0).sum().item()}")
-        print(f"[Rank {rank}] Actually masked (zero) tokens: {(masked_log_probs == 0).sum().item()}")
-        
         return masked_log_probs
 
     def _generate_and_score_completions(
@@ -171,16 +144,14 @@ class GRPOMultiTrainer(GRPOTrainer):
     ) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
         prompts = [x["prompt"] for x in inputs] # type: ignore
-        # prompts_text = [maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs] # type: ignore
-        # prompt_inputs = self.processing_class(
-        #     prompts_text, return_tensors="pt", padding=True, padding_side="left", add_special_tokens=False # type: ignore
-        # ) # type: ignore
-        # prompt_inputs = Trainer._prepare_inputs(self, prompt_inputs) # type: ignore
-        # prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
 
-        # if self.max_prompt_length is not None:
-        #     prompt_ids = prompt_ids[:, -self.max_prompt_length :]
-        #     prompt_mask = prompt_mask[:, -self.max_prompt_length :]
+        ##if there is starting_agent in the inputs 
+        starting_agent = [x["starting_agent"] for x in inputs if "starting_agent" in x]
+        if len(starting_agent) > 0:
+            starting_agent = starting_agent[0]
+        else:
+            starting_agent = None
+
 
         if self.state.global_step != self._last_loaded_step:
             self._move_model_to_vllm()
@@ -213,12 +184,12 @@ class GRPOMultiTrainer(GRPOTrainer):
                     min_p=0.0 if self.min_p is None else self.min_p,
                     max_tokens=self.max_completion_length,
                     guided_decoding_regex=self.guided_decoding_regex,
+                    starting_agent=starting_agent
             )
                 full_conversations = client_response["conversations"]
                 token_ids_list = client_response["token_ids"]
                 attention_mask_list = client_response["attention_masks"]
                 assistant_mask_list = client_response["assistant_masks"]
-                print("FULL CONVERSATIONS", full_conversations)
 
         else:
             full_conversations = [None] * len(all_prompts_text)
@@ -227,16 +198,12 @@ class GRPOMultiTrainer(GRPOTrainer):
             assistant_mask_list = [None] * len(all_prompts_text)
 
 
-        print(f"[Rank {rank}] full_conversations length: {len(full_conversations)}, example: {full_conversations[:1]}")
-
-        print(f"[Rank {rank}] Before broadcast")
 
         full_conversations = broadcast_object_list(full_conversations, from_process=0)
         token_ids_list = broadcast_object_list(token_ids_list, from_process=0)
         attention_mask_list = broadcast_object_list(attention_mask_list, from_process=0)
         assistant_mask_list = broadcast_object_list(assistant_mask_list, from_process=0)
 
-        print(f"[Rank {rank}] After broadcast")
 
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
@@ -360,18 +327,10 @@ class GRPOMultiTrainer(GRPOTrainer):
                     df = pd.DataFrame(table)
                     wandb.log({"completions": wandb.Table(dataframe=df)}) # type: ignore
 
-        print("TOKEN IDS")
-        print(token_ids)
-        print("ATTENTION MASK")
-        print(attention_mask)
-        print("ASSISTANT MASK")
-        print(assistant_mask)
-        print("OLD PER TOKEN LOGPS")
-        print(old_per_token_logps)
-        print("REF PER TOKEN LOGPS")
-        print(ref_per_token_logps)
-        print("ADVANTAGES")
-        print(advantages)
+
+        #free memory
+        del full_conversations, rewards_per_func, rewards, mean_grouped_rewards, std_grouped_rewards
+        torch.cuda.empty_cache()
 
         return {
             "token_ids": token_ids,
@@ -391,8 +350,6 @@ class GRPOMultiTrainer(GRPOTrainer):
         input_ids = inputs["token_ids"]
         attention_mask = inputs["attention_mask"]
         assistant_mask = inputs["assistant_mask"]
-
-        
 
 
         per_token_logps = self._get_per_token_logps(model, input_ids, attention_mask, assistant_mask)
