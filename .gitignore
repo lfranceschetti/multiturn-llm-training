@@ -17,3 +17,8 @@ runs/
 my_env.sh
 
 *.sh
+
+*.log
+
+*.json
+

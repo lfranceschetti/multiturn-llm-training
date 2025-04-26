@@ -176,7 +176,8 @@ def main(cfg: DictConfig):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
-        peft_config=peft_config
+        peft_config=peft_config,
+        turn_level_sampling=True
     )
 
     trainer.train()

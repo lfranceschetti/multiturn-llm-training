@@ -2,11 +2,14 @@
 #!/usr/bin/env python3
 import os
 import argparse
-
+import gc
 from accelerate import Accelerator
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from huggingface_hub import HfApi, login
 import torch
+from peft import LoraConfig, PeftModel
+from transformers import Trainer, TrainingArguments
+
 from deepspeed.utils.zero_to_fp32 import load_state_dict_from_zero_checkpoint
 
 def main():
@@ -31,6 +34,10 @@ def main():
     # Initialize accelerator
     accelerator = Accelerator()
     
+    #If name is a string, convert it to a list
+    if isinstance(args.model_names, str):
+        args.model_names = [args.model_names]
+
     for name in args.model_names:
         # Construct full path to model directory
         model_dir = os.path.join(args.output_dir, name)
@@ -41,29 +48,43 @@ def main():
         repo_name = f"{args.hf_username}/{name}"
         
         try:
-            # Load the model architecture from the base model
-            print(f"Loading base model: {args.base_model}")
-            model = AutoModelForCausalLM.from_pretrained(args.base_model)
-            model = accelerator.unwrap_model(model)
-            
-            # Load the training state
-            print(f"Loading checkpoint from: {model_dir}")
-            model = load_state_dict_from_zero_checkpoint(model, model_dir)
-            
-            # Load tokenizer
-            print("Loading tokenizer")
-            tokenizer = AutoTokenizer.from_pretrained(args.base_model)
-            
-            # Upload model and tokenizer to Hub
-            print(f"Pushing model to {repo_name}")
-            model.push_to_hub(repo_name)
-            tokenizer.push_to_hub(repo_name)
-            
-            print(f"✅ Model successfully uploaded to https://huggingface.co/{repo_name}")
+            tokenizer = AutoTokenizer.from_pretrained(
+                args.base_model,
+                padding_side='right',
+                trust_remote_code=True,
+            )
 
+            model = AutoModelForCausalLM.from_pretrained(
+                args.base_model,
+                trust_remote_code=True,
+                torch_dtype=torch.bfloat16,
+            )   
+
+
+            model = PeftModel.from_pretrained(model, model_dir)
+
+            print("Merging and unloading model")
+            model = model.merge_and_unload()
+
+          
+            # model = load_state_dict_from_zero_checkpoint(model, model_dir)
+
+
+            print(f"Pushing model to hub: {repo_name}")
+            
+            model.push_to_hub(repo_name, safe_serialization=True, use_temp_dir=True)
+            tokenizer.push_to_hub(repo_name, safe_serialization=True, use_temp_dir=True)
+            # deepspeed_plugin = accelerator.state.deepspeed_plugin
+            # zero_stage_3 = deepspeed_plugin is not None and deepspeed_plugin.zero_stage == 3
+            # gather_if_zero3 = deepspeed.zero.GatheredParameters if zero_stage_3 else nullcontext
+
+            # with gather_if_zero3(list(model.parameters())):
             del model
             del tokenizer
             torch.cuda.empty_cache()
+            gc.collect()
+            
+            print(f"✅ Model successfully uploaded to https://huggingface.co/{repo_name}")
             
         except Exception as e:
             print(f"❌ Error processing {name}: {str(e)}")

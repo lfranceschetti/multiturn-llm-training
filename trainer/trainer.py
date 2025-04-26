@@ -3,13 +3,14 @@ from typing import  Union
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from accelerate.utils import gather_object, DummyOptim, DummyScheduler
+from accelerate.utils import gather_object, DummyOptim, DummyScheduler, is_peft_model
 from datasets import load_dataset, DatasetDict, concatenate_datasets
 from torch.utils.data import DataLoader
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    PreTrainedModel
 )
 from omegaconf import DictConfig
 from trainer.utils import disable_dropout_in_model, get_cosine_schedule_with_warmup
@@ -18,6 +19,12 @@ from accelerate import Accelerator
 from abc import abstractmethod
 from tqdm import tqdm
 from trainer.logger import WandbLogger, GRPO_Logger, REFUEL_Logger, DPO_Logger
+from transformers.utils import is_peft_available
+from transformers import BitsAndBytesConfig
+if is_peft_available():
+    from peft import get_peft_model, LoraConfig
+
+
 
 
 
@@ -49,7 +56,7 @@ class Trainer:
 
 
 
-    def setup_optimizer(self, policy: nn.Module) -> Union[torch.optim.Optimizer, DummyOptim]:
+    def setup_optimizer(self, model: nn.Module) -> Union[torch.optim.Optimizer, DummyOptim]:
         print("Setting up optimizer...")
         optimizer_cls = (
             torch.optim.AdamW
@@ -59,7 +66,7 @@ class Trainer:
         )
 
         optimizer = optimizer_cls(
-            filter(lambda p: p.requires_grad, policy.parameters()),
+            filter(lambda p: p.requires_grad, model.parameters()),
             lr=self.args.lr,
             eps=self.args.eps,
             weight_decay=self.args.weight_decay
@@ -78,6 +85,31 @@ class Trainer:
             scheduler = DummyScheduler(
             optimizer, total_num_steps=self.args.num_updates * self.args.world_size, warmup_num_steps=int(self.args.num_updates * self.args.warmup_ratio * self.args.world_size))
         return scheduler
+
+
+
+    def _enable_gradient_checkpointing(self, model: PreTrainedModel) -> PreTrainedModel:
+        """Enables gradient checkpointing for the model."""
+        # Ensure use_cache is disabled
+        model.config.use_cache = False
+
+        # Enable gradient checkpointing on the base model for PEFT
+        if is_peft_model(model):
+            model.base_model.gradient_checkpointing_enable()
+        # Enable gradient checkpointing for non-PEFT models
+        else:
+            model.config.use_cache = False
+            model.gradient_checkpointing_enable()
+
+        # gradient_checkpointing_kwargs = {}
+        # use_reentrant = (
+        #     "use_reentrant" not in gradient_checkpointing_kwargs or gradient_checkpointing_kwargs["use_reentrant"]
+        # )
+
+        # if use_reentrant:
+        #     model.enable_input_require_grads()
+
+        return model
     
 
     def setup_model(self, quantized=False):
@@ -87,23 +119,56 @@ class Trainer:
             trust_remote_code=True,
         )
         tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-        policy = AutoModelForCausalLM.from_pretrained(
+
+        if self.args.quantized:
+
+            print("Loading quantized model...")
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_storage=torch.bfloat16,
+            )
+        else:
+            bnb_config = None
+
+        model = AutoModelForCausalLM.from_pretrained(
             self.args.base_model,
             trust_remote_code=True,
+            quantization_config=bnb_config,
             torch_dtype=torch.bfloat16,
             #"flash_attention_2" refers to a more efficient attention mechanism that can speed up training and inference. 
             #It’s a low-level optimization detail that uses a more memory- and compute-efficient algorithm for attention, if supported by the hardware and library.
             #RuntimeError: FlashAttention only supports Ampere GPUs or newer.
             # attn_implementation="flash_attention_2",
         )
-        policy.config.use_cache = False
-        policy.gradient_checkpointing_enable()
 
-        disable_dropout_in_model(policy)
+        model.enable_input_require_grads()
 
-        return policy, tokenizer
+        if self.args.use_peft:
+            if not is_peft_available():
+                raise ImportError("PEFT is required to use `peft_config`. Run `pip install peft`.")
+
+            #For now fix the PeftConfig, but in the future we should use the config from the args
+            peft_config = LoraConfig(
+                lora_alpha=16,
+                lora_dropout=0.1,
+                r=8,
+                bias="none",
+                task_type="CAUSAL_LM",
+                target_modules="all-linear"
+            )
+            
+            model = get_peft_model(model, peft_config)
+
+       
+        if not self.args.use_peft:
+            disable_dropout_in_model(model)
+
+        return model, tokenizer
     
-    def add_original_logprobs_to_datasets(self, dataset, validation_dataset, policy, tokenizer, batch_size=4, chunk_size=4):
+    def add_original_logprobs_to_datasets(self, dataset, validation_dataset, model, tokenizer, batch_size=4, chunk_size=4):
 
         print("Adding original logprobs to dataset...")
         device = self.accelerator.device
@@ -125,8 +190,8 @@ class Trainer:
                         # batch = {k: v.to(device) for k, v in batch.items() if isinstance(v, torch.Tensor)}
                         batch = {k: v for k, v in batch.items()}  # <- Accelerate auto handles devices
                         #CHANGE
-                        # logprobs = self.compute_logprobs(self.accelerator.unwrap_model(policy), tokenizer, batch, device)
-                        logprobs = self.compute_logprobs(policy, tokenizer, batch, device)
+                        # logprobs = self.compute_logprobs(self.accelerator.unwrap_model(model), tokenizer, batch, device)
+                        logprobs = self.compute_logprobs(model, tokenizer, batch, device)
 
                         logprobs = logprobs.detach().cpu().float().tolist()
 
@@ -158,7 +223,7 @@ class Trainer:
 
         return dataset, validation_dataset
     
-    def compute_logprobs(self, policy, tokenizer, data, device):
+    def compute_logprobs(self, model, tokenizer, data, device):
             results = []
 
             assert len(self.token_keys) == len(self.mask_keys), "Number of token_keys and mask_keys should be the same."
@@ -166,6 +231,7 @@ class Trainer:
             for token_key, mask_key in zip(self.token_keys, self.mask_keys):
                 tokens = data[token_key].to(device)
                 masks = data[mask_key].to(device)
+                masks = masks.float()
 
                 attention_mask = tokens != tokenizer.pad_token_id
 
@@ -174,7 +240,7 @@ class Trainer:
 
                 validate_inputs(input_ids, attention_mask)
             
-                output = policy(
+                output = model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     return_dict=True,
@@ -296,10 +362,10 @@ class DPOTrainer(Trainer):
     """Implementation of Trainer for DPO algorithm."""
     def calculate_loss(self, new_logprobs, old_logprobs, data):
         # Separate chosen (winning) and rejected (losing) log probabilities
-        pi_w = new_logprobs[:len(new_logprobs) // 2]      # π*(a^w | s^w)
-        pi_l = new_logprobs[len(new_logprobs) // 2:]      # π*(a^l | s^l)
-        pi_ref_w = old_logprobs[:len(old_logprobs) // 2]  # π_ref(a^w | s^w)
-        pi_ref_l = old_logprobs[len(old_logprobs) // 2:]  # π_ref(a^l | s^l)
+
+        pi_w, pi_l = new_logprobs.view(2, -1)       # π*(a^w | s^w) and π*(a^l | s^l)
+        pi_ref_w, pi_ref_l = old_logprobs.view(2, -1) # π_ref(a^w | s^w) and π_ref(a^l | s^l)
+
 
         # Compute log ratios for chosen (winning) and rejected (losing) trajectories
         log_ratio_chosen = pi_w - pi_ref_w  # log(π*(a^w | s^w) / π_ref(a^w | s^w))
@@ -313,11 +379,9 @@ class DPOTrainer(Trainer):
         if self.args.dpo.with_offset:
             sigmoid_arg = sigmoid_arg - (data["chosen_reward"] - data["reject_reward"])
 
-        # Apply the sigmoid function
-        sigmoid = torch.sigmoid(sigmoid_arg)
 
         # Compute the DPO loss
-        loss = -torch.log(sigmoid).mean()
+        loss = -F.logsigmoid(sigmoid_arg).mean()
 
         if self.mode=="validation":
             self.wandb_logger.add_validation_metrics(loss, new_logprobs[:len(new_logprobs) // 2], new_logprobs[len(new_logprobs) // 2:], old_logprobs[:len(old_logprobs) // 2], old_logprobs[len(old_logprobs) // 2:])
@@ -326,84 +390,5 @@ class DPOTrainer(Trainer):
 
 
 
-
-class GRPOTrainer(Trainer):
-
-    def __init__(self, args: DictConfig, accelerator: Accelerator):
-        super().__init__(args, accelerator)
-        self.token_keys =  ["token"]
-        self.reward_key = "payoff"
-        self.mask_keys =  ["mask"]
-        self.reference_logprob_keys = ["logprob"]
-        self.tokenized_logprobs = True
-        self.wandb_logger = GRPO_Logger(args, accelerator)
-
-
-
-    
-    """Implementation of Trainer for GRPO algorithm."""
-    def calculate_loss(self, new_logprobs, ref_logprobs, data):
-
-        #Input shape of the logprobs (B*G, L-1)
-        #I need to ensure with the choice of data that always G data points have the same original prompt.
-        #Then I can send in B different packages like this
-        #So i need the batch_size to be B*G
-        #I can start out with B=1, G=8
-        #This can easily be implemented if I just use the same prompt for all generations (always the same starting agent)
-
-        G = self.args.grpo.G
-
-        per_token_kl = torch.exp(ref_logprobs - new_logprobs) - (ref_logprobs - new_logprobs) - 1
-
-        #(B = original number of prompts x G = number of generations per prompt).
-        rewards = data[self.reward_key]
-
-        # Compute grouped-wise rewards (B, G) and take mean -> (B)
-        mean_grouped_rewards = rewards.view(-1, G).mean(dim=1)
-        std_grouped_rewards = rewards.view(-1, G).std(dim=1)
-
-        
-        # Normalize the rewards to compute the advantages
-        mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(G, dim=0)
-        std_grouped_rewards = std_grouped_rewards.repeat_interleave(G, dim=0)
-        #Shape (B x G)
-        advantages = (rewards - mean_grouped_rewards) / (std_grouped_rewards + 1e-4)
-
-        
-        if self.args.grpo.online:
-            #(B, L-1)
-            # x - x.detach() allows for preserving gradients from x
-            prob_ratio = torch.exp(new_logprobs - new_logprobs.detach())
-        else:
-            #(B, L-1)
-            prob_ratio = torch.exp(new_logprobs - ref_logprobs)
-
-
-        logprob_diff = new_logprobs - ref_logprobs
-        print("Logprob differences:", logprob_diff.min().item(), logprob_diff.max().item(), logprob_diff.mean().item())
-        print("prob_ratio min/max/mean:", prob_ratio.min().item(), prob_ratio.max().item(), prob_ratio.mean().item())
-        print(new_logprobs)
-        print(ref_logprobs)
-
-
-        per_token_loss = prob_ratio * advantages.unsqueeze(1)
-
-        masks = data[self.mask_keys[0]]
-
-
-        per_token_loss = -(per_token_loss - self.args.grpo.beta * per_token_kl)
-        loss = ((per_token_loss * masks[:, 1:]).sum(dim=1) / masks[:, 1:].sum(dim=1)).clamp(min=1).mean()
-
-        #Logging
-        mean_kl  = ((per_token_kl * masks[:, 1:]).sum(dim=1) / masks[:, 1:].sum(dim=1)).mean()
-        reward_mean = rewards.mean()
-        reward_std = std_grouped_rewards.mean()
-        prob_ratio_mean = prob_ratio.mean()
-        if self.mode == "training":
-            self.wandb_logger.add_training_metrics(loss.detach(), reward_mean, reward_std, mean_kl, prob_ratio_mean)
-        elif self.mode == "validation":
-            self.wandb_logger.add_validation_metrics(loss.detach(), reward_mean, reward_std, mean_kl, prob_ratio_mean)
-
-        return loss
     
     

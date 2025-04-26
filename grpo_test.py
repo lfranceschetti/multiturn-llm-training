@@ -76,24 +76,28 @@ def main(cfg: DictConfig):
 
     print("Negotiation Environment created")
 
-    prompt = "Lets write a story about a cat. Keep it short. There once was a cat named..."
-    prompt_2 = "Lets write a story about a cat. Keep it short. There once was a cat named..."
-    game_config = { }
+    # prompt = "Lets write a story about a cat. Keep it short. There once was a cat named..."
+    # prompt_2 = "Lets write a story about a cat. Keep it short. There once was a cat named..."
+    # game_config = { }
 
-    samples = []
-    for _ in range(2000):
-        samples.append({
-            "prompt": prompt,  # This should be a list of message dicts
-            "prompt_2": prompt_2,
-            "game_config": game_config
-        })
+    # samples = []
+    # for _ in range(2000):
+    #     samples.append({
+    #         "prompt": prompt,  # This should be a list of message dicts
+    #         "prompt_2": prompt_2,
+    #         "game_config": game_config
+    #     })
 
-    # Create a Hugging Face Dataset
-    dataset = Dataset.from_list(samples)
+    # eval_samples = samples[:100]
+    # # Create a Hugging Face Dataset
+    # dataset = Dataset.from_list(samples)
 
 
-    train_dataset = dataset
-    eval_dataset =  dataset[:100]
+    # train_dataset = dataset
+    # eval_dataset = Dataset.from_list(eval_samples)
+
+    train_dataset = negotiation_env.create_dataset(size=500)
+    eval_dataset = negotiation_env.create_dataset(size=40)
 
     reward_functions = get_reward_functions()
 
@@ -117,7 +121,7 @@ def main(cfg: DictConfig):
         max_completion_length=200,
         per_device_train_batch_size=4,
         num_generations=4,
-        gradient_accumulation_steps=4,
+        gradient_accumulation_steps=1,
         gradient_checkpointing=True,
         save_strategy="steps",
         save_steps=200,
@@ -130,6 +134,7 @@ def main(cfg: DictConfig):
         report_to="wandb",
         vllm_server_host=vllm_server_host,
         vllm_server_port=vllm_server_port,
+        beta=0.08,
     )
 
     bnb_config = None
@@ -163,7 +168,8 @@ def main(cfg: DictConfig):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
-        peft_config=peft_config
+        peft_config=peft_config,
+        turn_level_sampling=True
     )
 
     trainer.train()

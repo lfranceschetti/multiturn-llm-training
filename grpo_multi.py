@@ -54,7 +54,7 @@ def main(cfg: DictConfig):
     reward_functions = negotiation_env.get_reward_functions()
 
     # notable defaults: lr = 1e-6, max_grad_norm = 0.01, constant lr 10 warmup steps, 1024 tokens in+out
-    run_name = "grpo_onesided_5"
+    run_name = "grpo_turn_level_onesided_1_starter_change"
     num_gpus = torch.cuda.device_count()
 
     vllm_server_host = os.environ.get("VLLM_SERVER_HOST", "0.0.0.0")
@@ -81,7 +81,7 @@ def main(cfg: DictConfig):
         save_only_model=True,
         use_vllm=True,
         vllm_gpu_memory_utilization=0.7 if num_gpus > 1 else 0.3,
-        logging_steps=1,
+        logging_steps=20,
         log_on_each_node=False,
         log_completions=True,
         report_to="wandb",
@@ -90,7 +90,10 @@ def main(cfg: DictConfig):
         eval_strategy="steps",
         eval_steps=20,
         eval_on_start=True,
+        push_to_hub=True,
         beta=0.08,
+        hub_strategy="all_checkpoints",
+        
     )
 
     bnb_config = None
@@ -124,7 +127,8 @@ def main(cfg: DictConfig):
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
-        peft_config=peft_config
+        peft_config=peft_config,
+        turn_level_sampling=True
     )
 
     trainer.train()

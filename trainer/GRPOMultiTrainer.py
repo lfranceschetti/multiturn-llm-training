@@ -47,6 +47,8 @@ from trl.trainer.utils import (
 
 from .environment import Environment
 from .GRPOEnvLogger import print_prompt_completions_sample
+import numpy as np
+
 
 if is_peft_available():
     from peft import PeftConfig # type: ignore
@@ -55,6 +57,15 @@ if is_wandb_available():
     import wandb
 
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
+
+
+def sample_geometric_bounded(p, max_value):
+    while True:
+        sample = np.random.geometric(p) - 1
+        if sample <= max_value:
+            return sample
+
+
 
 class GRPOMultiTrainer(GRPOTrainer):
     def __init__(
@@ -68,12 +79,16 @@ class GRPOMultiTrainer(GRPOTrainer):
             callbacks: Optional[list[TrainerCallback]] = None,
             optimizers: tuple[Optional[torch.optim.Optimizer], Optional[torch.optim.lr_scheduler.LambdaLR]] = (None, None),
             peft_config: Optional["PeftConfig"] = None,
+            turn_level_sampling: Optional[bool] = False,
+
             **kwargs,
     ):
         if not args.use_vllm: # type: ignore
             raise ValueError("vLLM must be enabled for GRPOMultiTrainer")
         if not (callable(reward_funcs) or (isinstance(reward_funcs, list) and all(callable(f) for f in reward_funcs))): 
             raise ValueError("reward_funcs must be a function or a list of functions. Use vLLM to host neural reward models.")
+
+        self.turn_level_sampling = turn_level_sampling
         super().__init__(
             model=model,
             reward_funcs=reward_funcs,
@@ -116,8 +131,9 @@ class GRPOMultiTrainer(GRPOTrainer):
             )
         
         # Get logits from the model for the entire sequence
+        print(f"Getting logits from model")
         logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
-
+        print(f"Getting logits from model done")
         
         # Shift logits left and input_ids right to align
         # This matches each token's logit with the next token's ID (standard LM setup)
@@ -147,6 +163,8 @@ class GRPOMultiTrainer(GRPOTrainer):
 
         ##if there is starting_agent in the inputs 
         starting_agent = [x["starting_agent"] for x in inputs if "starting_agent" in x]
+
+        print(f"Starting agent: {starting_agent}")
         if len(starting_agent) > 0:
             starting_agent = starting_agent[0]
         else:
@@ -164,11 +182,24 @@ class GRPOMultiTrainer(GRPOTrainer):
         all_prompts_text_2 = gather_object(prompts_2)
 
         rank = self.accelerator.process_index
+
     
         # Add rank to all print statements
         print(f"[Rank {rank}] Entering generating and scoring completions")
 
         if self.accelerator.is_main_process:
+
+            # Initialize sampled_h with a default value of None
+            sampled_h = None
+
+            if self.turn_level_sampling:
+                mode = "eval" if self.control.should_evaluate else "train"
+                #Sample a random turn number 
+                print(f"[Rank {rank}] Sampling turn number for {mode} set")
+                if mode == "train":
+                    #For now the number of conversation turns is fixed to 5 -> h ~ {0, 1, 2, 3, 4}
+                    sampled_h = sample_geometric_bounded(p=0.3, max_value=4)
+                    print(f"[Rank {rank}] Sampled turn number: {sampled_h}")
 
             # ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
 
@@ -184,26 +215,27 @@ class GRPOMultiTrainer(GRPOTrainer):
                     min_p=0.0 if self.min_p is None else self.min_p,
                     max_tokens=self.max_completion_length,
                     guided_decoding_regex=self.guided_decoding_regex,
-                    starting_agent=starting_agent
+                    starting_agent=starting_agent,
+                    sampled_h=sampled_h
             )
                 full_conversations = client_response["conversations"]
                 token_ids_list = client_response["token_ids"]
                 attention_mask_list = client_response["attention_masks"]
                 assistant_mask_list = client_response["assistant_masks"]
-
+                total_token_count = client_response["total_token_count"][0]
         else:
             full_conversations = [None] * len(all_prompts_text)
             token_ids_list = [None] * len(all_prompts_text)
             attention_mask_list = [None] * len(all_prompts_text)
             assistant_mask_list = [None] * len(all_prompts_text)
-
+            total_token_count = 0
 
 
         full_conversations = broadcast_object_list(full_conversations, from_process=0)
         token_ids_list = broadcast_object_list(token_ids_list, from_process=0)
         attention_mask_list = broadcast_object_list(attention_mask_list, from_process=0)
         assistant_mask_list = broadcast_object_list(assistant_mask_list, from_process=0)
-
+        #Total token count is a number that needs to be summed up across all processes
 
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
@@ -220,11 +252,12 @@ class GRPOMultiTrainer(GRPOTrainer):
         token_ids = torch.stack(token_ids_tensors, dim=0)
         attention_mask = torch.stack(attention_mask_tensors, dim=0)
         assistant_mask = torch.stack(assistant_mask_tensors, dim=0)
-
         #PRINT STARTING TOKENIZATION IN RANK x
         print("Number of Items on rank:", self.accelerator.process_index, " : ", len(full_conversations))
         
         print("Calculating logprobs")
+
+        print("Total token count:", total_token_count)
 
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
@@ -283,12 +316,19 @@ class GRPOMultiTrainer(GRPOTrainer):
         # Log the metrics
         mode = "eval" if self.control.should_evaluate else "train"
 
-        if mode == "train":
-            self._total_train_tokens += self.accelerator.gather_for_metrics(attention_mask.sum()).sum().item()
-        self._metrics[mode]["num_tokens"] = [self._total_train_tokens]
+        # if mode == "train":
+        #     self._total_train_tokens += self.accelerator.gather_for_metrics(attention_mask.sum()).sum().item()
+        # self._metrics[mode]["num_tokens"] = [self._total_train_tokens]
 
         completion_length = self.accelerator.gather_for_metrics(assistant_mask.sum(1)).float().mean().item() # type: ignore
         self._metrics[mode]["completion_length"].append(completion_length)
+
+        # Add tracking for total tokens and assistant tokens
+        total_token_count = torch.tensor(total_token_count, device=device)
+        if mode == "train":
+            print(f"Total token count: {total_token_count}")
+            self._total_train_token = self.accelerator.gather_for_metrics(total_token_count).sum().item()
+            self._metrics[mode]["train_tokens"] = [self._total_train_token]
 
         reward_per_func = rewards_per_func.mean(0) # type: ignore
         for i, reward_func in enumerate(self.reward_funcs):
