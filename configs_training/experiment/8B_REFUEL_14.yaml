@@ -1,0 +1,44 @@
+
+exp_name: "REFUEL-onesided-lora-beta-0.1-3"
+training_method: REFUEL
+seed: 555134
+track: true
+wandb_project_name: "multiturn_largebatch"
+wandb_dir: null
+run_name: null
+print_sample_output_freq: 500
+upload_interval: 500
+
+# Optimizer settings
+eps: 1e-8
+lr: 5e-6
+weight_decay: 1e-6
+optimizer: "adamw"
+warmup_ratio: 0.1
+start_idx: 0
+end_idx: -1
+use_peft: true
+quantized: false
+
+gradient_accumulation_steps: 1
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 4
+total_episodes: 8000
+
+ 
+# Model paths
+base_model: "meta-llama/Llama-3.1-8B-Instruct"
+output_dir: "/cluster/scratch/mgiulianelli/huggingface/models/"
+dataset: "LuckyLukke/negotio_REFUEL_onesided_preprocessed"
+
+total_length: 2048
+temperature: 0.9
+
+# REFUEL-specific settings
+refuel:
+  whiten_rewards: false
+  shift_mean: false
+  eta: null
+  beta: 0.1
+  nll_term: False
+  alpha: null

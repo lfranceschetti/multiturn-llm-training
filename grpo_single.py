@@ -85,7 +85,7 @@ def main(cfg: DictConfig):
     config_dict = OmegaConf.to_container(config, resolve=True)
     print("Config:\n", json.dumps(config_dict, indent=4))
 
-    negotiation_env = NegotiationEnv(config)
+    negotiation_env = NegotiationEnv(config, game_type="generic-rental-agreement")
 
     print("Negotiation Environment created")
 

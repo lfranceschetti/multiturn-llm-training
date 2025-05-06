@@ -89,6 +89,8 @@ class GRPOMultiTrainer(GRPOTrainer):
             raise ValueError("reward_funcs must be a function or a list of functions. Use vLLM to host neural reward models.")
 
         self.turn_level_sampling = turn_level_sampling
+        self._total_train_tokens = 0
+
         super().__init__(
             model=model,
             reward_funcs=reward_funcs,
@@ -131,9 +133,7 @@ class GRPOMultiTrainer(GRPOTrainer):
             )
         
         # Get logits from the model for the entire sequence
-        print(f"Getting logits from model")
         logits = model(input_ids=input_ids, attention_mask=attention_mask).logits
-        print(f"Getting logits from model done")
         
         # Shift logits left and input_ids right to align
         # This matches each token's logit with the next token's ID (standard LM setup)
@@ -163,6 +163,11 @@ class GRPOMultiTrainer(GRPOTrainer):
 
         ##if there is starting_agent in the inputs 
         starting_agent = [x["starting_agent"] for x in inputs if "starting_agent" in x]
+        negotiation_roles = [x["negotiation_role"] for x in inputs if "negotiation_role" in x]
+        game_configs = [x["game_config"] for x in inputs if "game_config" in x]
+        starting_agent = gather_object(starting_agent)
+        negotiation_roles = gather_object(negotiation_roles)
+        game_configs = gather_object(game_configs)
 
         print(f"Starting agent: {starting_agent}")
         if len(starting_agent) > 0:
@@ -170,6 +175,7 @@ class GRPOMultiTrainer(GRPOTrainer):
         else:
             starting_agent = None
 
+        # Gather and broadcast the additional parameters
 
         if self.state.global_step != self._last_loaded_step:
             self._move_model_to_vllm()
@@ -204,25 +210,43 @@ class GRPOMultiTrainer(GRPOTrainer):
             # ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
 
             with profiling_context(self, "vLLM.generate"):
-                client_response = self.vllm_client.generate(
-                    prompts=all_prompts_text,
-                    prompts_2=all_prompts_text_2,
-                    n=self.num_generations,
-                    repetition_penalty=self.repetition_penalty,
-                    temperature=self.temperature,
-                    top_p=self.top_p,
-                    top_k=-1 if self.top_k is None else self.top_k,
-                    min_p=0.0 if self.min_p is None else self.min_p,
-                    max_tokens=self.max_completion_length,
-                    guided_decoding_regex=self.guided_decoding_regex,
-                    starting_agent=starting_agent,
-                    sampled_h=sampled_h
-            )
-                full_conversations = client_response["conversations"]
-                token_ids_list = client_response["token_ids"]
-                attention_mask_list = client_response["attention_masks"]
-                assistant_mask_list = client_response["assistant_masks"]
-                total_token_count = client_response["total_token_count"][0]
+                for attempt in range(5):
+                    try:
+                        client_response = self.vllm_client.generate(
+                            prompts=all_prompts_text,
+                            prompts_2=all_prompts_text_2,
+                            n=self.num_generations,
+                            repetition_penalty=self.repetition_penalty,
+                            temperature=self.temperature,
+                            top_p=self.top_p,
+                            top_k=-1 if self.top_k is None else self.top_k,
+                            min_p=0.0 if self.min_p is None else self.min_p,
+                            max_tokens=self.max_completion_length,
+                            guided_decoding_regex=self.guided_decoding_regex,
+                            starting_agent=starting_agent,
+                            sampled_h=sampled_h
+                        )
+                        break
+                    except Exception as e:
+                        print(f"Connection failed (attempt {attempt+1}/{5}): {e}")
+                        if attempt < 4:
+                            if attempt == 3:
+                                print("Restarting vLLM client")
+                                self.vllm_client = VLLMClient(
+                                    self.args.vllm_server_host, self.args.vllm_server_port, connection_timeout=self.args.vllm_server_timeout
+                                )
+                            print(f"Waiting 120 seconds before retrying...")
+                            time.sleep(120)
+                        else:
+                            print("Max retries reached. Giving up.")
+                            raise
+                   
+
+            full_conversations = client_response["conversations"]
+            token_ids_list = client_response["token_ids"]
+            attention_mask_list = client_response["attention_masks"]
+            assistant_mask_list = client_response["assistant_masks"]
+            total_token_count = client_response["total_token_count"][0]
         else:
             full_conversations = [None] * len(all_prompts_text)
             token_ids_list = [None] * len(all_prompts_text)
@@ -253,11 +277,7 @@ class GRPOMultiTrainer(GRPOTrainer):
         attention_mask = torch.stack(attention_mask_tensors, dim=0)
         assistant_mask = torch.stack(assistant_mask_tensors, dim=0)
         #PRINT STARTING TOKENIZATION IN RANK x
-        print("Number of Items on rank:", self.accelerator.process_index, " : ", len(full_conversations))
         
-        print("Calculating logprobs")
-
-        print("Total token count:", total_token_count)
 
         with torch.no_grad():
             # When using num_iterations == 1, old_per_token_logps == per_token_logps, so we can skip it's
@@ -288,10 +308,20 @@ class GRPOMultiTrainer(GRPOTrainer):
             # Repeat all input columns (but "prompt" and "completion") to match the number of generations
             keys = [key for key in inputs[0] if key not in ["prompt", "completion"]] # type: ignore
             reward_kwargs = {key: [example[key] for example in inputs] for key in keys} # type: ignore
-            output_reward_func = reward_func(prompts=prompts, completions=full_conversations, **reward_kwargs) # type: ignore
+            print("Negotiation roles:", negotiation_roles)
+            print("Game configs:", game_configs)
+            reward_result = reward_func(prompts=prompts, completions=full_conversations, get_full_info=True, negotiation_roles=negotiation_roles, game_configs=game_configs, **reward_kwargs)
+            if isinstance(reward_result, tuple) and len(reward_result) == 2:
+                output_reward_func, evaluations = reward_result
+            else:
+                output_reward_func = reward_result
+                evaluations = None
+            print("Output reward evaluations:", evaluations)
             rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
 
         rewards_per_func = gather(rewards_per_func)
+
+        print("Rewards per func:", rewards_per_func)
 
         # Apply weights to each reward function's output and sum
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).sum(dim=1)
@@ -326,9 +356,9 @@ class GRPOMultiTrainer(GRPOTrainer):
         # Add tracking for total tokens and assistant tokens
         total_token_count = torch.tensor(total_token_count, device=device)
         if mode == "train":
-            print(f"Total token count: {total_token_count}")
-            self._total_train_token = self.accelerator.gather_for_metrics(total_token_count).sum().item()
-            self._metrics[mode]["train_tokens"] = [self._total_train_token]
+            print(f"Total train tokens: {self._total_train_tokens}")
+            self._total_train_tokens += self.accelerator.gather_for_metrics(total_token_count).sum().item()
+            self._metrics[mode]["train_tokens"].append(self._total_train_tokens)
 
         reward_per_func = rewards_per_func.mean(0) # type: ignore
         for i, reward_func in enumerate(self.reward_funcs):

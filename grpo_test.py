@@ -72,7 +72,7 @@ def main(cfg: DictConfig):
     config_dict = OmegaConf.to_container(config, resolve=True)
     print("Config:\n", json.dumps(config_dict, indent=4))
 
-    negotiation_env = NegotiationEnv(config)
+    negotiation_env = NegotiationEnv(config, game_type="multi-game")
 
     print("Negotiation Environment created")
 
@@ -96,13 +96,13 @@ def main(cfg: DictConfig):
     # train_dataset = dataset
     # eval_dataset = Dataset.from_list(eval_samples)
 
-    train_dataset = negotiation_env.create_dataset(size=500)
-    eval_dataset = negotiation_env.create_dataset(size=40)
+    train_dataset = negotiation_env.create_dataset(size=96)
+    eval_dataset = negotiation_env.create_dataset(size=96)
 
-    reward_functions = get_reward_functions()
+    reward_functions = negotiation_env.get_reward_functions()
 
     # notable defaults: lr = 1e-6, max_grad_norm = 0.01, constant lr 10 warmup steps, 1024 tokens in+out
-    run_name = "grpo_1B_numbers"
+    run_name = "grpo_1B_multi_game_1"
     num_gpus = torch.cuda.device_count()
 
     vllm_server_host = os.environ.get("VLLM_SERVER_HOST", "0.0.0.0")
@@ -134,6 +134,9 @@ def main(cfg: DictConfig):
         report_to="wandb",
         vllm_server_host=vllm_server_host,
         vllm_server_port=vllm_server_port,
+        eval_strategy="steps",
+        eval_steps=8,
+        eval_on_start=False,
         beta=0.08,
     )
 
