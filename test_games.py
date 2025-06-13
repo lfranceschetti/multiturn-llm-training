@@ -22,8 +22,29 @@ def main():
 
     print("Negotiation Environment created")
 
-    train_dataset = negotiation_env.create_dataset(size=47, game_type="multi-game")
-    print(train_dataset)
+    train_dataset = negotiation_env.create_dataset(size=46)
+    
+    game_names_and_descriptions = {}
+    game_names_and_issues = {}
+
+
+    #json dump every element in the dataset
+    for i, game in enumerate(train_dataset):
+        name = game["game_config"]["name"]
+        description = game["game_config"]["description"]
+        if name not in game_names_and_descriptions.keys():
+            game_names_and_descriptions[name] = description
+
+        issues = game["game_config"]["issues"]
+        for issue in issues:
+            if issue not in game_names_and_issues.keys():
+                game_names_and_issues[issue] = []
+            game_names_and_issues[issue].append(name)
+        game_names_and_descriptions.append({"name": name, "description": description})
+
+    print(game_names_and_descriptions)
+    print(game_names_and_issues)    
+
 
 
 

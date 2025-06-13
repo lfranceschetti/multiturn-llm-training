@@ -15,11 +15,6 @@ import numpy as np
 import tqdm
 
 
-def sample_geometric_bounded(p, max_value):
-    while True:
-        sample = np.random.geometric(p) - 1
-        if sample <= max_value:
-            return sample
 
 def main(args):
     """Main function that executes the program logic.
@@ -69,8 +64,6 @@ def main(args):
                 "Never make an offer that is not part of the possible values in your payoff table."
             ]
         }
-        temperature = 1.0
-
 
         config = {
             "game": game,
@@ -81,8 +74,10 @@ def main(args):
 
     elif args.game_type == "multi-game":
         #Maybe change this to 0.0 later
-        temperature = 1.0
         env = NegotiationEnv(game_type=args.game_type)
+    elif args.game_type == "out-of-domain":
+        env = NegotiationEnv(game_type=args.game_type)
+
 
     #Divided by two because each prompt is used for two games (one as starting agent and one as responder)
     dataset = env.create_dataset(args.num_samples)
@@ -109,11 +104,8 @@ def main(args):
         "negotiation_role": []
     }
 
-    if args.refuel:
-        results["sampled_h"] = []
-
     
-    def process_batch(batch, is_starting_agent, batch_num, total_batches, refuel):
+    def process_batch(batch, is_starting_agent, batch_num, total_batches):
         """Process a batch of examples and return the results.
         
         Args:
@@ -130,37 +122,25 @@ def main(args):
         negotiation_roles = [item.get("negotiation_role") for item in batch] if any("negotiation_role" in item for item in batch) else None
         game_configs = [item.get("game_config") for item in batch] if any("game_config" in item for item in batch) else None
 
-
-        if refuel:
-            sampled_h = sample_geometric_bounded(p=0.3, max_value=4)
-            results["sampled_h"].append(sampled_h)
-            results["sampled_h"].append(sampled_h)
-            prompts = [prompts[0], prompts[0]]
-            prompts_2 = [prompts_2[0], prompts_2[0]]
-            negotiation_roles = [negotiation_roles[0], negotiation_roles[0]]
-            game_configs = [game_configs[0], game_configs[0]]
-        else:
-            sampled_h = None
-
         client_response = vllm_client.generate(
             prompts=prompts,
             prompts_2=prompts_2,
             n=1,
-            temperature=temperature,
+            temperature=1.0,
             top_p=args.top_p if hasattr(args, 'top_p') else 1.0,
             top_k=args.top_k if hasattr(args, 'top_k') else 50,
             max_tokens=args.max_tokens if hasattr(args, 'max_tokens') else 200,
             starting_agent=is_starting_agent,
-            sampled_h=sampled_h
+            sampled_h=None
         )
         full_conversations = client_response["conversations"]
         
-        # Calculate rewards for each conversation
         batch_rewards = []
         for reward_func in reward_functions:
             # Process each item in the batch separately
             for item in batch:
                 reward_kwargs = {k: v for k, v in item.items() if k not in ["prompt", "completion"]}
+
                 output_reward_func, evaluations = reward_func(
                     prompts=[item["prompt"]],
                     completions=[full_conversations[batch.index(item)]],
@@ -182,6 +162,7 @@ def main(args):
             results["rewards"].append(reward)
             results["starting_agent"].append(is_starting_agent)
             results["negotiation_role"].append(item.get("negotiation_role"))
+
             
         print(f"Processed {'starting agent' if is_starting_agent else 'responder'} batch with {len(batch)} examples. Average reward: {np.mean(rewards):.4f}")
     
@@ -195,7 +176,7 @@ def main(args):
                       total=total_starting_batches,
                       desc="Starting Agent Batches"):
         batch = dataset_starting_agent[i:min(i+batch_size, len(dataset_starting_agent))]
-        process_batch(batch, True, i//batch_size + 1, total_starting_batches, args.refuel)
+        process_batch(batch, True, i//batch_size + 1, total_starting_batches)
 
     # Process responder dataset
     print("\nProcessing responder dataset...")
@@ -204,7 +185,7 @@ def main(args):
                       total=total_responder_batches,
                       desc="Responder Batches"):
         batch = dataset_responder[i:min(i+batch_size, len(dataset_responder))]
-        process_batch(batch, False, i//batch_size + 1, total_responder_batches, args.refuel)
+        process_batch(batch, False, i//batch_size + 1, total_responder_batches)
     
     # Calculate overall statistics
     all_rewards = results["rewards"]
@@ -236,8 +217,6 @@ def main(args):
             "negotiation_role": results["negotiation_role"]
         }
 
-        if args.refuel:
-            dict_to_save["sampled_h"] = results["sampled_h"]
 
         json.dump(dict_to_save, f, indent=2)
 
@@ -256,7 +235,6 @@ if __name__ == "__main__":
     parser.add_argument("--top-p", type=float, default=1.0, help="Top-p sampling parameter")
     parser.add_argument("--top-k", type=int, default=50, help="Top-k sampling parameter")
     parser.add_argument("--max-tokens", type=int, default=200, help="Maximum number of tokens to generate")
-    parser.add_argument("--refuel", type=bool, default=False, help="Refuel the model")
 
     # Parse arguments
     args = parser.parse_args()

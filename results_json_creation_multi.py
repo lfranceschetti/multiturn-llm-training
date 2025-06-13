@@ -21,14 +21,16 @@ def extract_method_and_number(folder_name):
     return (folder_name, 0)
 
 def analyze_evaluation_results():
-    base_path = Path("/cluster/home/mgiulianelli/code/negotio2/multiturn-llm-training/evaluations/generic-rental-agreement")
+    base_path = Path("/cluster/home/mgiulianelli/code/negotio2/multiturn-llm-training/evaluations/multi_game")
     
     # Dictionary to store results
     results = {
         'folder': [],
         'mean_reward': [],
         'mean_rent': [],
-        'percentage_successful_episodes': []
+        'percentage_successful_episodes': [],
+        'percentage_partially_unsuccessful_episodes': [],
+        'std_reward': [],
     }
     
     # Iterate through all folders
@@ -51,16 +53,29 @@ def analyze_evaluation_results():
             # Extract stats
             stats = data.get('stats', {})
             mean_reward = stats.get('mean_reward', None)
+            std_reward = stats.get('std_reward', None)
             num_samples = stats.get('num_samples', 0)
             
             # Extract rent prices and calculate mean
             rent_prices = []
             num_successful_episodes = 0
+            num_partially_unsuccessful_episodes = 0
             
             evaluations = data.get('evaluations', [])
             
             for episode in evaluations:
                 if isinstance(episode, dict):
+                    # Check if all values are N/A
+                    all_na = all(str(v).upper() == 'N/A' for v in episode.values())
+                    any_na = any(str(v).upper() == 'N/A' for v in episode.values())
+
+                    print([str(v).upper() for v in episode.values()])
+                    
+                    if not all_na:
+                        num_successful_episodes += 1
+                    if any_na:
+                        num_partially_unsuccessful_episodes += 1
+                        
                     if 'rent' in episode:
                         if episode['rent'] == 'N/A':
                             rent_prices.append(0)
@@ -70,43 +85,56 @@ def analyze_evaluation_results():
                                 numbers = re.findall(r'\d+', str(episode['rent']))
                                 if numbers:
                                     rent_prices.append(int(numbers[0]))
-                                    num_successful_episodes += 1
                             except (ValueError, IndexError):
                                 continue
                 elif isinstance(episode, list):
                     # Handle nested list structure
                     for sub_episode in episode:
-                        if isinstance(sub_episode, dict) and 'rent' in sub_episode:
-                            if sub_episode['rent'] == 'N/A':
-                                rent_prices.append(0)
-                            else:
-                                try:
-                                    numbers = re.findall(r'\d+', str(sub_episode['rent']))
-                                    if numbers:
-                                        rent_prices.append(int(numbers[0]))
-                                        num_successful_episodes += 1
-                                except (ValueError, IndexError):
-                                    continue
+                        if isinstance(sub_episode, dict):
+                            # Check if all values are N/A
+                            all_na = all(str(v).upper() == 'N/A' for v in sub_episode.values())
+                            any_na = any(str(v).upper() == 'N/A' for v in sub_episode.values())
+                            
+                            if not all_na:
+                                num_successful_episodes += 1
+                            if any_na:
+                                num_partially_unsuccessful_episodes += 1
+                                
+                            if 'rent' in sub_episode:
+                                if sub_episode['rent'] == 'N/A':
+                                    rent_prices.append(0)
+                                else:
+                                    try:
+                                        numbers = re.findall(r'\d+', str(sub_episode['rent']))
+                                        if numbers:
+                                            rent_prices.append(int(numbers[0]))
+                                    except (ValueError, IndexError):
+                                        continue
             
             # Calculate mean rent price
             mean_rent = np.mean(rent_prices) if rent_prices else None
             
-            # Calculate percentage of successful episodes
+            # Calculate percentages
             percentage_successful_episodes = (num_successful_episodes / num_samples) if num_samples > 0 else 0
+            percentage_partially_unsuccessful_episodes = (num_partially_unsuccessful_episodes / num_samples) if num_samples > 0 else 0
             
             # Store results
             results['folder'].append(folder.name)
             results['mean_reward'].append(mean_reward)
+            results['std_reward'].append(std_reward)
             results['mean_rent'].append(mean_rent)
             results['percentage_successful_episodes'].append(percentage_successful_episodes)
+            results['percentage_partially_unsuccessful_episodes'].append(percentage_partially_unsuccessful_episodes)
             
         except Exception as e:
             print(f"Error processing {folder.name}: {str(e)}")
             # Add None values for failed processing
             results['folder'].append(folder.name)
             results['mean_reward'].append(None)
+            results['std_reward'].append(None)
             results['mean_rent'].append(None)
             results['percentage_successful_episodes'].append(None)
+            results['percentage_partially_unsuccessful_episodes'].append(None)
     
     # Convert to DataFrame
     df = pd.DataFrame(results)
@@ -126,14 +154,14 @@ def analyze_evaluation_results():
 
     #Drop folder names and make method first column and number second column
     df = df.drop(columns=['folder'])
-    df = df[['method', 'number', 'mean_reward', 'mean_rent', 'percentage_successful_episodes']]
+    df = df[['method', 'number', 'mean_reward', 'std_reward', 'mean_rent', 'percentage_successful_episodes', 'percentage_partially_unsuccessful_episodes']]
     
     # Sort the DataFrame
     df = df.sort_values(['method', 'number'])
     
     
     # Save to CSV
-    output_path = base_path.parent / "evaluation_results.csv"
+    output_path = base_path.parent / "evaluation_results_multi.csv"
     df.to_csv(output_path, index=False)
     print(f"Results saved to {output_path}")
     

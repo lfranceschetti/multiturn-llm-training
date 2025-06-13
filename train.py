@@ -135,18 +135,21 @@ def main(cfg: DictConfig):
 
     dataset, validation_dataset, temp_dataloader, recompute_log = load_datasets(args)
 
-    MIN_LOGPROB = -1000.0
-    def filter_by_logprob(example):
-        # Return True if the example's chosen_logprob is above threshold
-        return example["chosen_logprob"] > MIN_LOGPROB
+    # MIN_LOGPROB = -1000.0
+    # def filter_by_logprob(example):
+    #     if "chosen_logprob" in example:
+    #         # Return True if the example's chosen_logprob is above threshold
+    #         return example["chosen_logprob"] > MIN_LOGPROB
+    #     else:
+    #         return True
 
-    filtered_dataset = dataset.filter(filter_by_logprob)
+    # filtered_dataset = dataset.filter(filter_by_logprob)
 
     # # Do the same for validation_dataset if you want:
-    filtered_validation_dataset = validation_dataset.filter(filter_by_logprob)
+    # filtered_validation_dataset = validation_dataset.filter(filter_by_logprob)
 
-    dataset = filtered_dataset
-    validation_dataset = filtered_validation_dataset
+    # dataset = filtered_dataset
+    # validation_dataset = filtered_validation_dataset
 
     if args.end_idx != -1:
         dataset = dataset.select(range(args.start_idx, args.end_idx))

@@ -31,7 +31,12 @@ def load_datasets(args):
         dataset = load_dataset(args.dataset, split='train')
         dataset = dataset.with_format("torch", columns=columns)
         temp_dataloader = DataLoader(dataset, batch_size=args.local_batch_size, shuffle=True)
-        validation_dataset = load_dataset(args.dataset, split='test')
-        validation_dataset = validation_dataset.with_format("torch", columns=columns)
+        try:
+            validation_dataset = load_dataset(args.dataset, split='test')
+            validation_dataset = validation_dataset.with_format("torch", columns=columns)
+        except:
+            #make a new dataset with the same elements as the training dataset
+            validation_dataset = dataset.select(range(len(dataset)//20))
+
         recompute_log = True
     return dataset, validation_dataset, temp_dataloader, recompute_log
