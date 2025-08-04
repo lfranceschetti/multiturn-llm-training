@@ -2,6 +2,8 @@ logs/
 
 secrets.json
 
+bash_scripts/
+
 wandb/
 
 outputs/
@@ -22,3 +24,4 @@ my_env.sh
 
 *.json
 
+archive/
