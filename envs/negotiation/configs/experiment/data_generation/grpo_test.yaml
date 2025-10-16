@@ -1,0 +1,28 @@
+num_negotiations: 17000
+checkpoint_frequency: 2500
+dataset_name: "LuckyLukke/negotio_REFUEL_8B_twosided"
+onesided: False
+seed: 188
+model_name: "meta-llama/Llama-3.2-1B-Instruct"  # Default model name, can be overridden by command line
+
+game:
+  name: ${games_dir}/generic-rental-agreement.yaml
+  issues: [gen-ra-rent.yaml]
+  issue_weights:
+    - [1]
+    - [1]
+  scale:
+    - 100
+    - 100
+
+agent_1:
+
+agent_2:
+
+
+negotiation_protocol:
+  max_rounds: 5
+  extract_table: False
+  save_folder: ${data_dir}/results/llama
+
+

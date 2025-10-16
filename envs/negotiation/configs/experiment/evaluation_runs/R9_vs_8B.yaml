@@ -1,0 +1,57 @@
+num_negotiations: 500
+checkpoint_frequency: 2000
+refuel: False
+evaluate: True
+onesided: True
+side: 0 #Landlord
+dataset_name: "LuckyLukke/REFUEL-9-7500_vs_8B"
+
+
+
+game:
+  _target_: simulator.games.Game
+  name: ${games_dir}/generic-rental-agreement.yaml
+  issues: [gen-ra-rent.yaml]
+  issue_weights:
+    - [1]
+    - [1]
+  scale:
+    - 100
+    - 100
+
+agent_1:
+  _target_: simulator.agents.NegotiationAgent
+  model:
+    _target_: models.huggingface_model.HuggingFaceModel
+    model_provider: huggingface
+    model_name: "LuckyLukke/REFUEL-onesided-beta-0.01-3750"
+    temperature: 0.9
+    reduce_memory: True
+    top_p: 0.95
+    repetition_penalty: 1.15
+
+
+agent_2:
+  _target_: simulator.agents.NegotiationAgent
+  model:
+    _target_: models.huggingface_model.HuggingFaceModel
+    model_provider: huggingface
+    model_name: "meta-llama/Llama-3.1-8B-Instruct"
+    temperature: 0.9
+    reduce_memory: True
+    top_p: 0.95
+    repetition_penalty: 1.15
+
+evaluator:
+  model:
+    _target_: models.openai_model.OpenAIModel
+    model_provider: openai
+    model_name: "gpt-4o-mini"
+
+negotiation_protocol:
+  max_rounds: 5
+  format_as_dialogue: False
+  extract_table: False
+  save_folder: ${data_dir}/results/llama
+
+

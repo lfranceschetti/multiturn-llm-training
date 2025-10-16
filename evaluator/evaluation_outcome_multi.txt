@@ -1,0 +1,51 @@
+You are an evaluator tasked with analyzing a negotiation conversation between two parties. Your goal is to provide a structured evaluation of the negotiation and to assess its outcome.
+
+
+First very quickly for each issue (ISSUE1_NAME, ISSUE2_NAME) reason about if the negotiation was successful, it is successfull if the following criteria are fulfilled:
+- Both parties must come to a mutual agreement on a single value for that issue. A mutual agreement is when both parties explicitly or implicitly agree on the same rent amount.
+- After this agreement, no party should attempt to change the agreed value for that issue. This includes reopening the conversation about that issue or tying it to other issues.
+
+
+Ignore all other issues that are not ISSUE1_NAME or ISSUE2_NAME. They do not affect whether the negotiation was successful or not, even if the conversation seems not to be finished.
+**If there is any doubt** (e.g., conflicting statements, unclear agreement, or incomplete information) about agreement on ISSUE1_NAME or ISSUE2_NAME, treat the negotiation about this issue as **unsuccessful** and set the agreed outcome to "N/A."
+It is crucial that you analyze if the confersation about the issue was reopened. If it was, the negotiation about this issue was not successful.
+
+
+Afterwards very briefly reason about the actual values of the agreed outcome for ISSUE1_NAME and ISSUE2_NAME if there is an agreement and list them in the format "EXAMPLE1" and "EXAMPLE2" respectively. If the negotiation was not successful for one of the issues, the agreed outcome should be "N/A"
+
+Then provide your output in in **strict JSON format** in the format shown in the examples below:
+
+Example for negotiation where ISSUE1_NAME was successful and for ISSUE2_NAME the conversation was not finished:
+```json
+{
+  "ISSUE1_NAME": "EXAMPLE1",
+  "ISSUE2_NAME": "N/A"
+}
+```
+
+Example for negotiation where agreement was reached for both issues:
+
+```json
+{
+  "ISSUE1_NAME": "EXAMPLE1",
+  "ISSUE2_NAME": "EXAMPLE2"
+}
+```
+
+Example for negotiation where the conversation was not finished or there was no agreement:
+
+```json
+{
+  "ISSUE1_NAME": "N/A",
+  "ISSUE2_NAME": "N/A"
+}
+```
+
+Additional Instructions:
+- Base your analysis solely on the information provided in the conversation.
+- Do not assume any information that is not explicitly stated.
+- ISSUE1_NAME and ISSUE2_NAME should be the only issues present in the dictionary.
+- If there are multiple agreements, prioritize the most recent mutual agreement as the final decision.
+- Keep the reasoning process very brief and to the point.
+
+

@@ -14,3 +14,4 @@ fastapi
 uvicorn
 pydantic
 peft
+git+https://github.com/lfranceschetti/trl.git #This is a fork of the original TRL repository that is modified to allow for multi-turn LLM conversations
