@@ -1,0 +1,2 @@
+ROUNDS = 5
+MAX_TOKENS = 200

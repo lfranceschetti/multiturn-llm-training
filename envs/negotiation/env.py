@@ -49,12 +49,9 @@ class NegotiationEnv:
         self.seed = seed
         self.set_seed(self.seed)
 
-        self.games_path = "/cluster/home/mgiulianelli/code/negotio2/llm-negotiations/configs/games/"
-        self.rules_path = "/cluster/home/mgiulianelli/code/negotio2/llm-negotiations/configs/general_game_rules.yaml"
+        self.games_path = "/cluster/home/fraluca/negotio2/multiturn-llm-training/configs/games/"
+        self.rules_path = self.games_path + "general_game_rules.yaml"
 
-        # Instantiate the first agent
-        self.agent_1 = NegotiationAgent()
-        self.agent_2 = NegotiationAgent()
 
     def get_prompts_from_game(self, game: Game, max_rounds: int = 5):
         prompts = game.get_system_game_msg(agent_id=0)["content"]
@@ -67,25 +64,18 @@ class NegotiationEnv:
 
     def create_dataset(self, size=2000) -> Dataset:
         # For now, we will use the same prompt for all games
-
         with open(self.rules_path, "r") as f:
             rules = yaml.safe_load(f)
 
 
-
         if self.game_type == "generic-rental-agreement":
             games_config = {
-                    "game": "generic-rental-agreement.yaml",
-                    "issues": [
-                        "gen-ra-rent.yaml"
-                    ],
-                     "issue_weights": [
-                    [1],    
-                    [1]
-                    ],
-                    "scale": SCALE,
-                    **rules,
-                },
+                "game": "generic-rental-agreement.yaml",
+                "issues": ["gen-ra-rent.yaml"],
+                "issue_weights": [[1], [1]],
+                "scale": SCALE,
+                **rules,
+            }
 
             games_config = self.add_game_info_to_game_config(games_config)
 
@@ -104,76 +94,36 @@ class NegotiationEnv:
                     "game_type": self.game_type,
                     "negotiation_role": 1
                 })
-
+        
             # Create a Hugging Face Dataset
             try:
-                # Try to create dataset with dictionaries
-                dataset = Dataset.from_list(samples)
-                # Verify the dataset format
-                test_item = dataset[0]
-                if not isinstance(test_item, dict):
-                    # If not a dict, create simple dataset with prompts only
-                    print("Warning: Dataset items are not dictionaries, creating simpler dataset")
-                    dataset = Dataset.from_dict({"text": [prompts] * size})
-            except Exception as e:
-                print(f"Error creating dataset: {e}. Creating simple dataset instead.")
-                # Fallback to simple dataset
-                dataset = Dataset.from_dict({"text": [prompts] * size})
+                ds = Dataset.from_list(samples)
+                _ = ds[0]  # force materialize
+            except Exception:
+                ds = Dataset.from_dict({"text": [p1] * size})
+            return ds
             
 
-
-        elif self.game_type == "multi-game":
-
-            # Hardcoded common game fields
-            rules = {
-                "rules_prompt": "Never forget the following negotiation rules:",
-                "rules": [
-                    "Your total payoff is the sum of your payoffs on all issues. Higher payoffs are better than lower payoffs.",
-                    "A valid agreement occurs only when all issues are decided. Partial agreements result in a total payoff to you of zero.",
-                    "You are not allowed to accept any agreement that results in a payoff less than zero.",
-                    "You are not allowed to deviate from or innovate with the payoffs listed on the payoff table. In other words, you cannot change your payoffs.",
-                    "No side payments are allowed. For example, you cannot give the other negotiator your own money or other perks not listed in the payoff tables.",
-                    "You may describe issues and elaborate on them as you see fit. However, you are not allowed to invent additional issues.",
-                    "Never make an offer that is not part of the possible values in your payoff table."
+        elif self.game_type in {"multi-game", "out-of-domain"}:
+            if self.game_type == "multi-game":
+                games_used = [
+                    {"game": "generic-rental-agreement.yaml",
+                    "issues": ["gen-ra-deposit.yaml","gen-ra-duration-distributive.yaml","gen-ra-duration.yaml","gen-ra-rent.yaml"]},
+                    {"game": "generic-loan-agreement.yaml",
+                    "issues": ["gen-la-amount.yaml","gen-la-duration.yaml","gen-la-fees.yaml","gen-la-rate.yaml"]},
+                    {"game": "generic-merger.yaml",
+                    "issues": ["gen-m-benefits.yaml", "gen-m-ownership.yaml"]},
                 ]
-            }
-
-            # Hardcoded list of games and their issues
-            games_used = [
-                {
-                    "game": "generic-rental-agreement.yaml",
-                    "issues": [
-                        "gen-ra-deposit.yaml",
-                        "gen-ra-duration-distributive.yaml",
-                        "gen-ra-duration.yaml",
-                        "gen-ra-rent.yaml"
-                    ]
-                },
-                {
-                    "game": "generic-loan-agreement.yaml",
-                    "issues": [
-                        "gen-la-amount.yaml",
-                        "gen-la-duration.yaml",
-                        "gen-la-fees.yaml",
-                        "gen-la-rate.yaml"
-                    ]
-                },
-                {
-                    "game": "generic-merger.yaml",
-                    "issues": [
-                        "gen-m-benefits.yaml",
-                        "gen-m-ownership.yaml"
-                    ]
-                }
-            ]
+            else:
+                games_used = [
+                    {"game": "rio_copa.yaml",
+                    "issues": ["rp_contingent_liability.yaml","rp_family_employees.yaml","rp_financing.yaml","rp_non_compete_period.yaml"]},
+                ]
 
             #Get additional game configs from their respective yaml files
             for gd in games_used:
-                game_filename = gd["game"]
-                games_path = "/cluster/home/mgiulianelli/code/negotio2/llm-negotiations/configs/games/"
-                with open(os.path.join(games_path, game_filename), "r") as f:
-                    game_dict = yaml.safe_load(f)
-                gd["game_info"] = game_dict
+
+                gd = add_game_info_to_game_config(gd)
 
            
             issue_weights_multiple_possibilites = [90, 50, 10]
@@ -181,7 +131,6 @@ class NegotiationEnv:
             #Create the different game configs except for the issue weights distribution
             game_configs = []
             for gd in games_used:
-                game_filename = gd["game"]
                 issues = gd["issues"]
                 game_info = gd["game_info"]
                 #First add all single issue games
@@ -248,107 +197,9 @@ class NegotiationEnv:
             dataset = Dataset.from_list(samples)
             return dataset
 
-        elif self.game_type == "out-of-domain":
-              # Load rules from general_game_rules.yaml instead of hardcoding
-            rules_path = "/cluster/home/mgiulianelli/code/negotio2/llm-negotiations/configs/general_game_rules.yaml"
-            with open(rules_path, "r") as f:
-                rules = yaml.safe_load(f)
+        else:
+            raise ValueError(f"Game type {self.game_type} not supported")
 
-
-            # Hardcoded list of games and their issues
-            games_used = [
-                {
-                    "game": "rio_copa.yaml",
-                    "issues": [
-                        "rp_contingent_liability.yaml",
-                        "rp_family_employees.yaml",
-                        "rp_financing.yaml",
-                        "rp_non_compete_period.yaml",
-                    ]
-                },
-            ]
-
-            #Get additional game configs from their respective yaml files
-            for gd in games_used:
-                game_filename = gd["game"]
-                with open(os.path.join(games_path, game_filename), "r") as f:
-                    game_dict = yaml.safe_load(f)
-                gd["game_info"] = game_dict
-
-           
-            issue_weights_multiple_possibilites = [90, 50, 10]
-
-            #Create the different game configs except for the issue weights distribution
-            game_configs = []
-            for gd in games_used:
-                game_filename = gd["game"]
-                issues = gd["issues"]
-                game_info = gd["game_info"]
-                #First add all single issue games
-                for issue in issues:
-                    game_configs.append({
-                        "name": issue,
-                        "issues": [issue],
-                        "scale": SCALE,
-                        **rules,
-                        **game_info
-                    })
-
-                #Then make all combinations of issues for the game
-                combos = list(itertools.combinations(issues, 2))
-
-                for combo in combos:
-                    #Sample a random issue weight from the list do it with numpy
-                    game_configs.append({
-                        "name": combo,
-                        "issues": list(combo),
-                        "scale": SCALE,
-                        **rules,
-                        **game_info
-                    })
-
-                # distribute samples evenly across combos
-            
-            print("Number of game configs: ", len(game_configs))
-            #Shuffle the game configs so that it doesnt optimize on the first few games or single-issue games
-            game_configs = np.random.permutation(game_configs)
-            
-            samples = []
-            for i in range(size//2):
-                game_config = game_configs[i % len(game_configs)]
-                if len(game_config["issues"]) == 1:
-                    game_config["issue_weights"] = [[1], [1]]
-                else:
-                    #Sample a random issue weight from the list do it with numpy
-                    iw_1 = np.random.choice(issue_weights_multiple_possibilites)
-                    iw_2 = np.random.choice(issue_weights_multiple_possibilites)
-                    game_config["issue_weights"] = [[iw_1, 100-iw_1], [iw_2, 100-iw_2]]
-
-                game = Game(**game_config)
-                prompt1, prompt2 = self.get_prompts_from_game(game)
-                samples.append({
-                    "prompt": prompt1,
-                    "prompt_2": prompt2,
-                    "game_config": game_config,
-                    "starting_agent": (i // len(game_configs)) % 2 == 0,
-                    "game_type": self.game_type,
-                    "negotiation_role": 1
-                })
-
-                samples.append({
-                    "prompt": prompt2,
-                    "prompt_2": prompt1,
-                    "game_config": game_config,
-                    "starting_agent": (i // len(game_configs)) % 2 == 0,
-                    "game_type": self.game_type,
-                    "negotiation_role": 2
-                })
-
-
-            dataset = Dataset.from_list(samples)
-            return dataset
-
-        return dataset
 
 
     def get_reward_functions(self):
