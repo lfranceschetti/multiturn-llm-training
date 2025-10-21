@@ -4,7 +4,7 @@ from attr import define, field
 import requests
 
 import sys
-from helpers.model_utils import ChatModel
+from evaluator.model_utils import ChatModel
 
 
 @define

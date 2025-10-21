@@ -3,7 +3,7 @@ from attr import define, field
 from typing import Any
 import json
 import re
-from simulator.games import Game
+from envs.negotiation.games import Game
 
 
 

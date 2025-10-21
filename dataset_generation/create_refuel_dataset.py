@@ -5,7 +5,7 @@ import json
 import argparse
 notebook_dir = os.getcwd() 
 sys.path.append(os.path.abspath(os.path.join(notebook_dir, '..', '..', 'llm-negotiations')))
-from envs.negotiation_env import NegotiationEnv 
+from envs.negotiation.env import NegotiationEnv 
 from trl.extras.profiling import profiling_context, profiling_decorator
 from trl.extras.vllm_client import VLLMClient
 from omegaconf import DictConfig, OmegaConf
@@ -96,7 +96,7 @@ def main(args):
 
     vllm_server_host = os.environ.get("VLLM_SERVER_HOST", "0.0.0.0")
     vllm_server_port = int(os.environ.get("VLLM_SERVER_PORT", 8000))
-    vllm_client = VLLMClient(vllm_server_host, vllm_server_port, connection_timeout=120.0, enable_weight_sync=False)
+    vllm_client = VLLMClient(vllm_server_host, vllm_server_port, connection_timeout=120.0)
 
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

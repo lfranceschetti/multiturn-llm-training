@@ -4,12 +4,10 @@ import torch
 from typing import Any, Dict, List, Sequence, Optional, Union
 from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
-from simulator.protocols import NegotiationProtocol
-from simulator.games import Game
-from simulator.agents import NegotiationAgent
+from envs.negotiation.games import Game
 from evaluator.evaluator import Evaluator
 from datasets import Dataset
-from models.openai_model import OpenAIModel
+from evaluator.openai_model import OpenAIModel
 import itertools
 import os
 import yaml
@@ -204,7 +202,7 @@ class NegotiationEnv:
 
     def get_reward_functions(self):
         """
-        Returns a list of reward functions to be used by the GRPO trainer.
+        Returns a list of reward functions to be used by the GRPO trainer
         """
         
         def negotiation_payoff_reward(prompts, completions, get_full_info=False, game_config=None, negotiation_roles=None, **kwargs):

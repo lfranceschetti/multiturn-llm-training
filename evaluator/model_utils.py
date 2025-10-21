@@ -7,7 +7,7 @@ from attr import define, field
 import sys
 sys.path.append("src/")
 
-from helpers.utils import get_api_key
+from evaluator.utils import get_api_key
 
 
 

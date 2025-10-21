@@ -4,15 +4,15 @@ import json
 import argparse
 notebook_dir = os.getcwd() 
 sys.path.append(os.path.abspath(os.path.join(notebook_dir, '..', 'llm-negotiations'))) 
-from envs.negotiation_env import NegotiationEnv 
-from trainer.GRPOMultiTrainer import GRPOMultiTrainer
+from envs.negotiation.env import NegotiationEnv 
+from trainer.LAGRPOTrainer import LAGRPOTrainer
 from trl import GRPOConfig
 import hydra
 from omegaconf import DictConfig, open_dict, OmegaConf 
-from simulator.games import Game
-from helpers.utils import unpack_nested_yaml, fill_defaults, get_inference_root_overrides
+from envs.negotiation.games import Game
+from evaluator.utils import unpack_nested_yaml, fill_defaults, get_inference_root_overrides
 import torch
-from simulator.games import Game
+from envs.negotiation.games import Game
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig
 from datasets import Dataset
@@ -164,7 +164,7 @@ def main(cfg: DictConfig):
         target_modules="all-linear"
     )
 
-    trainer = GRPOMultiTrainer(
+    trainer = LAGRPOTrainer(
         model=model,
         reward_funcs=reward_functions, 
         args=training_args,

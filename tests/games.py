@@ -4,7 +4,7 @@ import json
 import argparse
 notebook_dir = os.getcwd() 
 sys.path.append(os.path.abspath(os.path.join(notebook_dir, '..', 'llm-negotiations'))) 
-from envs.negotiation_env import NegotiationEnv 
+from envs.negotiation.env import NegotiationEnv 
 
 
 #https://github.com/huggingface/peft/blob/main/examples/sft/README.md

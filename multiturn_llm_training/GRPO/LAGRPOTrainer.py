@@ -67,7 +67,7 @@ def sample_geometric_bounded(p, max_value):
 
 
 
-class GRPOMultiTrainer(GRPOTrainer):
+class LAGRPOTrainer(GRPOTrainer):
     def __init__(
             self,
             model: Union[str, PreTrainedModel],
@@ -84,7 +84,7 @@ class GRPOMultiTrainer(GRPOTrainer):
             **kwargs,
     ):
         if not args.use_vllm: # type: ignore
-            raise ValueError("vLLM must be enabled for GRPOMultiTrainer")
+            raise ValueError("vLLM must be enabled for LAGRPOTrainer")
         if not (callable(reward_funcs) or (isinstance(reward_funcs, list) and all(callable(f) for f in reward_funcs))): 
             raise ValueError("reward_funcs must be a function or a list of functions. Use vLLM to host neural reward models.")
 

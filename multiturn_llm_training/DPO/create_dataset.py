@@ -9,7 +9,7 @@ from enum import Enum
 
 notebook_dir = os.getcwd() 
 sys.path.append(os.path.abspath(os.path.join(notebook_dir, '..', '..', 'llm-negotiations')))
-from envs.negotiation_env import NegotiationEnv 
+from envs.negotiation.env import NegotiationEnv 
 from trl.extras.profiling import profiling_context, profiling_decorator
 from trl.extras.vllm_client import VLLMClient
 from omegaconf import DictConfig, OmegaConf
@@ -72,12 +72,14 @@ def sample_geometric_bounded(p: float, max_value: int) -> int:
 def setup_environment(args) -> Tuple[NegotiationEnv, VLLMClient, List[Any]]:
     """Set up the negotiation environment and VLLM client."""
     env = NegotiationEnv(game_type=args.game_type)
+    print("Environment created")
     reward_functions = env.get_reward_functions()
-    
+    print("Reward functions created")
     vllm_server_host = os.environ.get("VLLM_SERVER_HOST", "0.0.0.0")
     vllm_server_port = int(os.environ.get("VLLM_SERVER_PORT", 8000))
-    vllm_client = VLLMClient(vllm_server_host, vllm_server_port, connection_timeout=120.0, enable_weight_sync=False)
-    
+    print(f"VLLM server host: {vllm_server_host}, VLLM server port: {vllm_server_port}")
+    vllm_client = VLLMClient(vllm_server_host, vllm_server_port, connection_timeout=120.0)
+    print("VLLM client created")
     return env, vllm_client, reward_functions
 
 
@@ -291,13 +293,16 @@ def main(args):
 
     # Setup
     env, vllm_client, reward_functions = setup_environment(args)
+    print("Environment setup complete")
     config = ProcessingConfig()
+
     
     # Create and filter datasets
     dataset = env.create_dataset(args.num_samples)
+    print("Dataset created")
     dataset_starting_agent = [d for d in dataset if d["starting_agent"]]
     dataset_responder = [d for d in dataset if not d["starting_agent"]]
-
+    print("Datasets filtered")
     # Process datasets
     print("\nProcessing starting agent dataset...")
     starting_agent_examples, starting_agent_tokens = process_dataset(dataset_starting_agent, vllm_client, reward_functions, 

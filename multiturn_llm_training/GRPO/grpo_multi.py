@@ -4,15 +4,15 @@ import json
 import argparse
 notebook_dir = os.getcwd() 
 sys.path.append(os.path.abspath(os.path.join(notebook_dir, '..', 'llm-negotiations'))) 
-from envs.negotiation_env import NegotiationEnv 
-from trainer.GRPOMultiTrainer import GRPOMultiTrainer
+from envs.negotiation.env import NegotiationEnv 
+from trainer.LAGRPOTrainer import LAGRPOTrainer
 from trl import GRPOConfig
 import hydra
 from omegaconf import DictConfig, open_dict, OmegaConf 
-from simulator.games import Game
-from helpers.utils import unpack_nested_yaml, fill_defaults, get_inference_root_overrides
+from envs.negotiation.games import Game
+from evaluator.utils import unpack_nested_yaml, fill_defaults, get_inference_root_overrides
 import torch
-from simulator.games import Game
+from envs.negotiation.games import Game
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig
 
@@ -44,17 +44,17 @@ def main(cfg: DictConfig):
     config_dict = OmegaConf.to_container(config, resolve=True)
     print("Config:\n", json.dumps(config_dict, indent=4))
 
-    negotiation_env = NegotiationEnv(config)
+    negotiation_env = NegotiationEnv(config, game_type="multi-game")
 
     print("Negotiation Environment created")
 
-    train_dataset = negotiation_env.create_dataset(size=1000)
-    eval_dataset = negotiation_env.create_dataset(size=100)
+    train_dataset = negotiation_env.create_dataset(size=4000)
+    eval_dataset = negotiation_env.create_dataset(size=92)
 
     reward_functions = negotiation_env.get_reward_functions()
 
     # notable defaults: lr = 1e-6, max_grad_norm = 0.01, constant lr 10 warmup steps, 1024 tokens in+out
-    run_name = "grpo_negotiation_quantized"
+    run_name = "grpo_turn_level_multi_game_3"
     num_gpus = torch.cuda.device_count()
 
     vllm_server_host = os.environ.get("VLLM_SERVER_HOST", "0.0.0.0")
@@ -63,7 +63,7 @@ def main(cfg: DictConfig):
     training_args = GRPOConfig(
         output_dir=f"/cluster/scratch/mgiulianelli/huggingface/models/{run_name}",
         run_name=run_name,
-        learning_rate=2e-4,
+        learning_rate=5e-5,
         lr_scheduler_type="constant_with_warmup",
         warmup_steps=10,
         num_train_epochs=1,
@@ -71,32 +71,35 @@ def main(cfg: DictConfig):
         num_iterations=1,
         max_prompt_length=1600,
         max_completion_length=200,
-        per_device_train_batch_size=2,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=4,
         num_generations=8,
-        gradient_accumulation_steps=2,
+        gradient_accumulation_steps=1,
         gradient_checkpointing=True,
         save_strategy="steps",
         save_steps=200,
         save_only_model=True,
         use_vllm=True,
-        logging_steps=1,
+        vllm_gpu_memory_utilization=0.7 if num_gpus > 1 else 0.3,
+        logging_steps=20,
         log_on_each_node=False,
         log_completions=True,
         report_to="wandb",
         vllm_server_host=vllm_server_host,
         vllm_server_port=vllm_server_port,
+        eval_strategy="steps",
+        eval_steps=100,
+        eval_on_start=False,
+        push_to_hub=True,
+        beta=0.08,
+        hub_strategy="all_checkpoints",
+        
     )
 
+    bnb_config = None
 
     print("Training Args:\n", training_args)
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_storage=torch.bfloat16,
-    )
-    # bnb_config = None
+
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     tokenizer.pad_token = tokenizer.eos_token
@@ -105,8 +108,8 @@ def main(cfg: DictConfig):
         model_name,
         quantization_config=bnb_config,
         trust_remote_code=True,
-        torch_dtype=torch.bfloat16,
-    )
+        torch_dtype=torch.float16,
+       )
 
     peft_config = LoraConfig(
         lora_alpha=16,
@@ -117,8 +120,7 @@ def main(cfg: DictConfig):
         target_modules="all-linear"
     )
 
-
-    trainer = GRPOMultiTrainer(
+    trainer = LAGRPOTrainer(
         model=model,
         reward_funcs=reward_functions, 
         args=training_args,
@@ -126,6 +128,7 @@ def main(cfg: DictConfig):
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
         peft_config=peft_config,
+        turn_level_sampling=True
     )
 
     trainer.train()
