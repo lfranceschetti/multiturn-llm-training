@@ -42,6 +42,7 @@ class Game:
     parties: list = field(default=None)
     rules: list = field(factory=list)
     rules_prompt: str = field(default='')
+    game_settings: str = field(default=None)
 
     def __attrs_post_init__(self):
 
@@ -104,7 +105,14 @@ class Game:
 
         return system_msg
 
-    def load_issues(self, issues_path="/cluster/home/mgiulianelli/code/negotio2/llm-negotiations/configs/issues/"):
+    def load_issues(self):
+        # Relative path from games.py to issues folder
+        # games.py is in: multiturn-llm-training/envs/negotiation/
+        # issues folder is in: multiturn-llm-training/negotiation/configs/issues/
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        issues_path = os.path.join(current_dir, "configs/issues/")
+        issues_path = os.path.normpath(issues_path)
+        
         issues = []
         for issue in self.issues:
             if isinstance(issue, str):

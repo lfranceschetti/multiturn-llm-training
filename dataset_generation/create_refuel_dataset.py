@@ -267,11 +267,7 @@ def main(args):
     }
 
 
-    # # Save to local JSON file for backup
-    # output_path = os.path.join("/cluster/home/mgiulianelli/code/negotio2/multiturn-llm-training/dataset_generation/results.json")
-    # with open(output_path, 'w') as f:
-    #     json.dump(dict_to_save, f, indent=2)
-    # print(f"Results saved locally to {output_path}")
+
     
     # Upload to Hugging Face
     if args.hf_repo:

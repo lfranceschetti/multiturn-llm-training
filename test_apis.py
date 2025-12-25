@@ -62,7 +62,14 @@ def test_conversation(api0_url, api1_url):
                 print(f"Number of conversations with token data: {len(result['token_ids'])}")
                 
                 for i in range(len(result['token_ids'])):
-                    assistant_tokens_count = sum(sum(mask) for mask in result['assistant_masks'][i])
+                    # Handle both flat list and nested list structures
+                    mask = result['assistant_masks'][i]
+                    if mask and isinstance(mask[0], (list, tuple)):
+                        # Nested structure: sum each sublist then sum the results
+                        assistant_tokens_count = sum(sum(m) for m in mask)
+                    else:
+                        # Flat list: sum directly
+                        assistant_tokens_count = sum(mask)
                     print(f"Conversation {i+1} assistant tokens: {assistant_tokens_count}")
         
         return True

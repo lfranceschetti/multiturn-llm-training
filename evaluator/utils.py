@@ -15,16 +15,34 @@ from hydra.core.hydra_config import HydraConfig
 
 
 
-def get_api_key(fname='secrets.json', provider='openai', key='dlab_key'):
+def get_api_key(fname='secrets.json', provider='openai', key='api_key'):
+    """
+    Load API key from secrets.json file.
+    
+    Args:
+        fname: Filename of the secrets file (default: 'secrets.json')
+        provider: Provider name (default: 'openai')
+        key: Key name within the provider dict (default: 'api_key')
+    
+    Returns:
+        API key string or None if loading fails
+    """
+    # Get the directory where this file is located (evaluator/)
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    # Go up one level to multiturn-llm-training/ and join with secrets.json
+    secrets_path = os.path.join(current_dir, '..', fname)
+    secrets_path = os.path.normpath(secrets_path)
+
     try:
-        with open(fname) as f:
-            keys = json.load(f)[provider]
+        with open(secrets_path) as f:
+            secrets_data = json.load(f)
+            keys = secrets_data[provider]
             if key is not None:
                 api_key = keys[key]
             else:
                 api_key = list(keys.values())[0]
     except Exception as e:
-        print(f'error: unable to load {provider} api key {key} from file {fname} - {e}')
+        print(f'error: unable to load {provider} api key {key} from file {secrets_path} - {e}')
         return None
 
     return api_key

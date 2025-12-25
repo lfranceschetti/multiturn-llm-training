@@ -47,8 +47,10 @@ class NegotiationEnv:
         self.seed = seed
         self.set_seed(self.seed)
 
-        self.games_path = "/cluster/home/fraluca/negotio2/multiturn-llm-training/configs/games/"
-        self.rules_path = self.games_path + "general_game_rules.yaml"
+        # Use relative paths based on the location of this file
+        base_dir = os.path.dirname(__file__)
+        self.games_path = os.path.join(base_dir, "configs", "games")
+        self.rules_path = os.path.join(base_dir, "configs", "general_game_rules.yaml")
 
 
     def get_prompts_from_game(self, game: Game, max_rounds: int = 5):
@@ -68,7 +70,7 @@ class NegotiationEnv:
 
         if self.game_type == "generic-rental-agreement":
             games_config = {
-                "game": "generic-rental-agreement.yaml",
+                "game_settings": "generic-rental-agreement.yaml",
                 "issues": ["gen-ra-rent.yaml"],
                 "issue_weights": [[1], [1]],
                 "scale": SCALE,
@@ -105,23 +107,23 @@ class NegotiationEnv:
         elif self.game_type in {"multi-game", "out-of-domain"}:
             if self.game_type == "multi-game":
                 games_used = [
-                    {"game": "generic-rental-agreement.yaml",
+                    {"game_settings": "generic-rental-agreement.yaml",
                     "issues": ["gen-ra-deposit.yaml","gen-ra-duration-distributive.yaml","gen-ra-duration.yaml","gen-ra-rent.yaml"]},
-                    {"game": "generic-loan-agreement.yaml",
+                    {"game_settings": "generic-loan-agreement.yaml",
                     "issues": ["gen-la-amount.yaml","gen-la-duration.yaml","gen-la-fees.yaml","gen-la-rate.yaml"]},
-                    {"game": "generic-merger.yaml",
+                    {"game_settings": "generic-merger.yaml",
                     "issues": ["gen-m-benefits.yaml", "gen-m-ownership.yaml"]},
                 ]
             else:
                 games_used = [
-                    {"game": "rio_copa.yaml",
+                    {"game_settings": "rio_copa.yaml",
                     "issues": ["rp_contingent_liability.yaml","rp_family_employees.yaml","rp_financing.yaml","rp_non_compete_period.yaml"]},
                 ]
 
             #Get additional game configs from their respective yaml files
             for gd in games_used:
 
-                gd = add_game_info_to_game_config(gd)
+                gd = self.add_game_info_to_game_config(gd)
 
            
             issue_weights_multiple_possibilites = [90, 50, 10]
@@ -261,10 +263,11 @@ class NegotiationEnv:
 
 
     def add_game_info_to_game_config(self, game_config: dict):
-        game_filename = game_config["game"]
-        with open(os.path.join(self.games_path, game_filename), "r") as f:
-            game_dict = yaml.safe_load(f)
-        game_config.update(game_dict)
+        game_filename = game_config.get("game_settings") or game_config.get("game")
+        if game_filename:
+            with open(os.path.join(self.games_path, game_filename), "r") as f:
+                game_dict = yaml.safe_load(f)
+            game_config.update(game_dict)
         return game_config
 
 

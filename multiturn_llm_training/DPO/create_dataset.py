@@ -261,28 +261,51 @@ def convert_to_dict_format(dpo_examples: List[DPOExample], args) -> Dict[str, An
 
 def upload_to_huggingface(dict_to_save: Dict[str, Any], args) -> None:
     """Upload the dataset to Hugging Face."""
+    print(f"[DEBUG] upload_to_huggingface called")
+    print(f"[DEBUG] args.hf_repo = {args.hf_repo}")
+    print(f"[DEBUG] args.hf_repo is None: {args.hf_repo is None}")
+    print(f"[DEBUG] args.hf_repo is False: {args.hf_repo is False}")
+    print(f"[DEBUG] bool(args.hf_repo): {bool(args.hf_repo)}")
+    
     if not args.hf_repo:
+        print("[DEBUG] No HF_REPO provided, skipping upload")
         return
+    
+    print(f"[DEBUG] HF_REPO provided: {args.hf_repo}, proceeding with upload")
     
     try:
         # Convert to dataset format
+        print(f"[DEBUG] Filtering dictionary to list values only...")
         dataset_dict = {key: value for key, value in dict_to_save.items() if isinstance(value, list)}
+        print(f"[DEBUG] Filtered dataset_dict keys: {list(dataset_dict.keys())}")
+        print(f"[DEBUG] Filtered dataset_dict values lengths: {[(k, len(v)) for k, v in dataset_dict.items()]}")
+        
+        print(f"[DEBUG] Creating Hugging Face Dataset object...")
         hf_dataset = Dataset.from_dict(dataset_dict)
+        print(f"[DEBUG] Dataset created with {len(hf_dataset)} examples")
         
         # Upload to Hugging Face
         dataset_name = f"{args.game_type}_{args.model.replace('/', '_')}"
-        print(f"Uploading to Hugging Face repository: {args.hf_repo}, dataset: {dataset_name}")
+        print(f"[DEBUG] Dataset name: {dataset_name}")
+        print(f"[DEBUG] Uploading to Hugging Face repository: {args.hf_repo}, dataset: {dataset_name}")
         
         api = HfApi()
         api_token = os.environ.get("HF_TOKEN")
+        print(f"[DEBUG] HF_TOKEN from environment: {'SET' if api_token else 'NOT SET'}")
         if not api_token:
             print("Warning: HF_TOKEN environment variable not set. Using anonymous upload.")
         
+        print(f"[DEBUG] Calling push_to_hub...")
         hf_dataset.push_to_hub(args.hf_repo, dataset_name, token=api_token)
+        print(f"[DEBUG] push_to_hub completed successfully")
         print(f"Dataset successfully uploaded to: https://huggingface.co/datasets/{args.hf_repo}/{dataset_name}")
         
     except Exception as e:
+        print(f"[DEBUG] Exception caught in upload_to_huggingface")
         print(f"Error uploading to Hugging Face: {str(e)}")
+        import traceback
+        print(f"[DEBUG] Full traceback:")
+        traceback.print_exc()
 
 
 def main(args):
@@ -319,8 +342,14 @@ def main(args):
     print(f"Total token count: {total_token_count}")
     
     # Convert and save
+    print(f"\nConverting {len(all_examples)} examples to dictionary format...")
     dict_to_save = convert_to_dict_format(all_examples, args)
+    print(f"Dictionary created with keys: {list(dict_to_save.keys())}")
+    print(f"Dictionary values lengths: {[(k, len(v) if isinstance(v, list) else 'N/A') for k, v in dict_to_save.items()]}")
+    print(f"\nAttempting to upload to Hugging Face...")
+    print(f"HF_REPO argument: {args.hf_repo}")
     upload_to_huggingface(dict_to_save, args)
+    print("Upload function completed.")
 
 if __name__ == "__main__":
     # Create the argument parser

@@ -21,7 +21,7 @@ class ChatModel:
     model_name: str = field(default='gpt-3.5-turbo')
     model_key: Any = field(default=None)
     model_key_path: Any = field(default='secrets.json')
-    model_key_name: Any = field(default="api_key_private")
+    model_key_name: Any = field(default="api_key")
     model: Any = field(default=None)
     temperature: float = 0.0
     context_max_tokens: int = 256

@@ -3,6 +3,7 @@ from attr import define, field
 from typing import Any
 import json
 import re
+import os
 from envs.negotiation.games import Game
 
 
@@ -159,16 +160,21 @@ class Evaluator:
 
         single_issue = len(self.game.issues) == 1
 
+        # Get the directory where this file is located (evaluator/)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
         try:
             if self.game_type == "generic-rental-agreement":
-                with open('/cluster/home/mgiulianelli/code/negotio2/llm-negotiations/evaluator/evaluation_outcome.txt', 'r', encoding='utf-8') as file:
+                file_path = os.path.join(current_dir, 'evaluation_outcome.txt')
+                with open(file_path, 'r', encoding='utf-8') as file:
                     system_message = file.read()
                 return system_message
             elif self.game_type == "multi-game" or self.game_type == "out-of-domain":
                 if single_issue:
                     issue_name = self.game.issues[0].name
                     payoff_example = self.game.issues[0].payoff_labels[0][4]
-                    with open('/cluster/home/mgiulianelli/code/negotio2/llm-negotiations/evaluator/evaluation_outcome_single.txt', 'r', encoding='utf-8') as file:
+                    file_path = os.path.join(current_dir, 'evaluation_outcome_single.txt')
+                    with open(file_path, 'r', encoding='utf-8') as file:
                         system_message = file.read()
 
                         system_message = system_message.replace("ISSUE_NAME", issue_name)
@@ -178,7 +184,8 @@ class Evaluator:
                     issue_names = [issue.name for issue in self.game.issues]
                     payoff_examples = [issue.payoff_labels[0][4] for issue in self.game.issues]
 
-                    with open('/cluster/home/mgiulianelli/code/negotio2/llm-negotiations/evaluator/evaluation_outcome_multi.txt', 'r', encoding='utf-8') as file:
+                    file_path = os.path.join(current_dir, 'evaluation_outcome_multi.txt')
+                    with open(file_path, 'r', encoding='utf-8') as file:
                         system_message = file.read()
                         system_message = system_message.replace("ISSUE1_NAME", issue_names[0])
                         system_message = system_message.replace("ISSUE2_NAME", issue_names[1])
