@@ -267,7 +267,7 @@ class NegotiationEnv:
         if game_filename:
             with open(os.path.join(self.games_path, game_filename), "r") as f:
                 game_dict = yaml.safe_load(f)
-            game_config.update(game_dict)
+            game_config["game_info"] = game_dict  # Create "game_info" key to match old behavior
         return game_config
 
 

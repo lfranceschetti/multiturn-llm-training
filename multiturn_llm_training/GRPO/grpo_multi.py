@@ -71,6 +71,8 @@ def main(cfg: DictConfig):
         num_iterations=1,
         max_prompt_length=1600,
         max_completion_length=200,
+        # Note: The effective batch size (per_device_train_batch_size * num_gpus) must be divisible
+        # by num_generations to ensure proper grouping for reward normalization in GRPO.
         per_device_train_batch_size=4,
         per_device_eval_batch_size=4,
         num_generations=8,

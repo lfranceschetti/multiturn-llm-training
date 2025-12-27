@@ -215,7 +215,13 @@ class LAGRPOTrainer(GRPOTrainer):
                         client_response = self.vllm_client.generate(
                             prompts=all_prompts_text,
                             prompts_2=all_prompts_text_2,
-                            n=self.num_generations,
+                            # For multi-turn conversations, we use n=1 because after the first turn, each conversation
+                            # diverges and has a unique prompt. The number of generations is handled by the sampler,
+                            # which duplicates each unique prompt num_generations times (e.g., 8 identical initial prompts).
+                            #
+                            # The effective batch size (per_device_batch_size * num_gpus) must be divisible by
+                            # num_generations to ensure proper grouping for reward normalization.
+                            n=1,
                             repetition_penalty=self.repetition_penalty,
                             temperature=self.temperature,
                             top_p=self.top_p,

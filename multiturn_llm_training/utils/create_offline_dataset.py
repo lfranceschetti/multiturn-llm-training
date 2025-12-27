@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Common utilities for dataset creation in DPO and REFUEL training."""
 import os
+import json
+import tempfile
 from dataclasses import dataclass
 from typing import List, Dict, Any, Tuple, Union, Optional, Callable, TypeVar, Protocol
 from enum import Enum
@@ -66,14 +68,6 @@ class Sample:
     chosen_generated_tokens: int
     reject_generated_tokens: int
     sampled_h: Optional[int] = None  # REFUEL-specific, None for DPO
-
-
-@dataclass
-class BackupSample:
-    """Data class to hold backup samples with equal rewards."""
-    item: Dict[str, Any]
-    generation_result: GenerationResult
-    rewards: List[float]
 
 
 # ============================================================================
@@ -208,88 +202,6 @@ def create_sample(item: Dict[str, Any], generation_result: GenerationResult,
     )
 
 
-def create_sample_from_backup(backup_sample: BackupSample, new_generation_result: GenerationResult,
-                             new_rewards: List[float], is_starting_agent: bool) -> Sample:
-    """Create a Sample by combining a backup sample with a new generation result.
-    
-    Works for both DPO and REFUEL. Takes the first conversation from backup and 
-    the second conversation from the new sample. Uses sampled_h from the chosen generation.
-    
-    Args:
-        backup_sample: BackupSample containing item, generation_result, and rewards
-        new_generation_result: GenerationResult from new sample
-        new_rewards: List of rewards from new sample
-        is_starting_agent: Whether this is for the starting agent
-        
-    Returns:
-        Sample object (DPO if sampled_h is None, REFUEL if sampled_h is set)
-    """
-    backup_item = backup_sample.item
-    backup_generation = backup_sample.generation_result
-    backup_rewards = backup_sample.rewards
-    
-    game_config = backup_item.get("game_config", {})
-    
-    # Extract game_settings and remove .yaml extension if present
-    game_settings = game_config.get("game_settings", "")
-    if game_settings.endswith(".yaml"):
-        game_settings = game_settings[:-5]  # Remove .yaml
-    
-    # Use first conversation from backup and second from new (as per user request)
-    backup_conversation = backup_generation.conversations[0]
-    new_conversation = new_generation_result.conversations[1]
-    backup_reward = backup_rewards[0]
-    new_reward = new_rewards[1]
-    
-    # Determine which is chosen and which is rejected based on rewards
-    if backup_reward > new_reward:
-        # Backup is better (chosen), new is worse (reject)
-        chosen_conversation = backup_conversation
-        reject_conversation = new_conversation
-        chosen_token = backup_generation.token_ids[0]
-        reject_token = new_generation_result.token_ids[1]
-        chosen_mask = backup_generation.assistant_masks[0]
-        reject_mask = new_generation_result.assistant_masks[1]
-        chosen_reward = backup_reward
-        reject_reward = new_reward
-        chosen_generated_tokens = backup_generation.generated_tokens[0]
-        reject_generated_tokens = new_generation_result.generated_tokens[1]
-        sampled_h = backup_generation.sampled_h  # Use sampled_h from chosen (backup) generation
-    else:
-        # New is better (chosen), backup is worse (reject)
-        chosen_conversation = new_conversation
-        reject_conversation = backup_conversation
-        chosen_token = new_generation_result.token_ids[1]
-        reject_token = backup_generation.token_ids[0]
-        chosen_mask = new_generation_result.assistant_masks[1]
-        reject_mask = backup_generation.assistant_masks[0]
-        chosen_reward = new_reward
-        reject_reward = backup_reward
-        chosen_generated_tokens = new_generation_result.generated_tokens[1]
-        reject_generated_tokens = backup_generation.generated_tokens[0]
-        sampled_h = new_generation_result.sampled_h  # Use sampled_h from chosen (new) generation
-    
-    return Sample(
-        game=game_config.get("name", ""),
-        issues=game_config.get("issues", []),
-        game_settings=game_settings,
-        issue_weights=game_config.get("issue_weights", []),
-        starting_agent=is_starting_agent,
-        negotiation_role=backup_item.get("negotiation_role", ""),
-        chosen=chosen_conversation,
-        reject=reject_conversation,
-        chosen_token=chosen_token,
-        reject_token=reject_token,
-        chosen_mask=chosen_mask,
-        reject_mask=reject_mask,
-        chosen_reward=chosen_reward,
-        reject_reward=reject_reward,
-        chosen_generated_tokens=chosen_generated_tokens,
-        reject_generated_tokens=reject_generated_tokens,
-        sampled_h=sampled_h  # Will be None for DPO, int for REFUEL
-    )
-
-
 # ============================================================================
 # Dataset Processing
 # ============================================================================
@@ -303,7 +215,6 @@ def process_sample(
     sample_num: int,
     total_samples: int,
     config: ProcessingConfig,
-    backup_list: List[BackupSample],
     generate_fn: Callable[[VLLMClient, Dict[str, Any], Any, bool], GenerationResult],
     num_tries: int = 0
 ) -> Optional[Sample]:
@@ -320,7 +231,6 @@ def process_sample(
         sample_num: Current sample number
         total_samples: Total number of samples
         config: Processing configuration
-        backup_list: List of backup samples
         generate_fn: Function to generate conversations (returns GenerationResult)
         num_tries: Number of retry attempts
         
@@ -345,35 +255,11 @@ def process_sample(
         comparison_result = compare_rewards(rewards)
         
         if comparison_result == ComparisonResult.EQUAL:
-            # Check if we can match with any backup sample
-            for backup_idx, backup_sample in enumerate(backup_list):
-                # Compare new rewards with backup rewards
-                # We'll use first conversation from backup and second from new
-                new_reward = rewards[1]  # Second conversation from new sample
-                backup_reward = backup_sample.rewards[0]  # First conversation from backup
-                
-                if new_reward != backup_reward:
-                    # Found a match! Create sample from backup + new
-                    print(f"Found matching backup sample with different rewards: {backup_reward:.4f} vs {new_reward:.4f}")
-                    sample = create_sample_from_backup(backup_sample, generation_result, rewards, is_starting_agent)
-                    
-                    # Remove used backup sample
-                    backup_list.pop(backup_idx)
-                    
-                    print(f"Processed {'starting agent' if is_starting_agent else 'responder'} sample {sample_num} using backup. "
-                          f"Rewards: {backup_reward:.4f}, {new_reward:.4f}")
-                    
-                    return sample
-            
-            # No match found, add to backup and retry
-            print(f"Adding sample to backup list (rewards equal: {rewards[0]:.4f})")
-            backup_sample = BackupSample(item=item, generation_result=generation_result, rewards=rewards)
-            backup_list.append(backup_sample)
-            
-            # Retry
+            # Rewards are equal, retry generation
+            print(f"Rewards are equal ({rewards[0]:.4f}), retrying generation...")
             return process_sample(
                 item, vllm_client, reward_functions, args, is_starting_agent,
-                sample_num, total_samples, config, backup_list, generate_fn, num_tries + 1
+                sample_num, total_samples, config, generate_fn, num_tries + 1
             )
         
         # Create sample (rewards are different)
@@ -389,7 +275,7 @@ def process_sample(
         if num_tries < config.max_retries:
             return process_sample(
                 item, vllm_client, reward_functions, args, is_starting_agent,
-                sample_num, total_samples, config, backup_list, generate_fn, num_tries + 1
+                sample_num, total_samples, config, generate_fn, num_tries + 1
             )
         return None
 
@@ -420,12 +306,11 @@ def process_dataset(
         List of Sample objects
     """
     samples = []
-    backup_list: List[BackupSample] = []
     
     for i, item in enumerate(tqdm.tqdm(dataset, desc=f"{'Starting Agent' if is_starting_agent else 'Responder'} Samples")):
         sample = process_sample(
             item, vllm_client, reward_functions, args, is_starting_agent,
-            i + 1, len(dataset), config, backup_list, generate_fn
+            i + 1, len(dataset), config, generate_fn
         )
         
         if sample:
@@ -435,11 +320,6 @@ def process_dataset(
             # Calculate total tokens from samples if needed for reporting
             total_tokens = sum(s.chosen_generated_tokens + s.reject_generated_tokens for s in samples)
             print(f"Processed {len(samples)} samples. Total tokens: {total_tokens}")
-            print(f"Backup list size: {len(backup_list)}")
-    
-    # Report any remaining backup samples
-    if backup_list:
-        print(f"Warning: {len(backup_list)} samples with equal rewards remain in backup list and were not used")
     
     return samples
 
@@ -461,16 +341,27 @@ def convert_to_dict_format(samples: List[Sample], args) -> Dict[str, Any]:
     Returns:
         Dictionary with all sample data formatted for saving
     """
+    # NOTE: The order of keys in this dictionary determines the column order in the HuggingFace dataset table.
+    # Reorder the keys below to change the column order in the uploaded dataset.
     result = {
         "model": args.model,
+        "chosen": [s.chosen for s in samples],
+        "reject": [s.reject for s in samples],
+    }
+    
+    # Include sampled_h if any samples have it (REFUEL-specific)
+    # Placed after chosen and reject as requested
+    if samples and samples[0].sampled_h is not None:
+        result["sampled_h"] = [s.sampled_h for s in samples]
+    
+    # Continue with remaining fields
+    result.update({
         "game_type": args.game_type,
         "starting_agent": [s.starting_agent for s in samples],
         "negotiation_role": [s.negotiation_role for s in samples],
         "game_settings": [s.game_settings for s in samples],
         "issues": [s.issues for s in samples],
         "issue_weights": [s.issue_weights for s in samples],
-        "chosen": [s.chosen for s in samples],
-        "reject": [s.reject for s in samples],
         "chosen_token": [s.chosen_token for s in samples],
         "reject_token": [s.reject_token for s in samples],
         "chosen_mask": [s.chosen_mask for s in samples],
@@ -479,11 +370,7 @@ def convert_to_dict_format(samples: List[Sample], args) -> Dict[str, Any]:
         "reject_reward": [s.reject_reward for s in samples],
         "chosen_generated_tokens": [s.chosen_generated_tokens for s in samples],
         "reject_generated_tokens": [s.reject_generated_tokens for s in samples],
-    }
-    
-    # Include sampled_h if any samples have it (REFUEL-specific)
-    if samples and samples[0].sampled_h is not None:
-        result["sampled_h"] = [s.sampled_h for s in samples]
+    })
     
     return result
 
@@ -496,8 +383,6 @@ def upload_to_huggingface(dict_to_save: Dict[str, Any], args) -> None:
     """Upload the dataset to Hugging Face."""
     print(f"[DEBUG] upload_to_huggingface called")
     print(f"[DEBUG] args.hf_repo = {args.hf_repo}")
-    print(f"[DEBUG] args.hf_repo is None: {args.hf_repo is None}")
-    print(f"[DEBUG] args.hf_repo is False: {args.hf_repo is False}")
     print(f"[DEBUG] bool(args.hf_repo): {bool(args.hf_repo)}")
     
     if not args.hf_repo:
@@ -531,7 +416,44 @@ def upload_to_huggingface(dict_to_save: Dict[str, Any], args) -> None:
         print(f"[DEBUG] Calling push_to_hub...")
         hf_dataset.push_to_hub(args.hf_repo, dataset_name, token=api_token)
         print(f"[DEBUG] push_to_hub completed successfully")
+        
+        # Create and upload generation settings metadata file
+        print(f"[DEBUG] Creating generation settings metadata file...")
+        generation_settings = {
+            "model": args.model,
+            "game_type": args.game_type,
+            "generation_settings": {
+                "temperature": getattr(args, 'temperature', 1.0),
+                "top_p": getattr(args, 'top_p', 1.0),
+                "top_k": getattr(args, 'top_k', 50),
+                "max_tokens": getattr(args, 'max_tokens', 200),
+            },
+            "num_samples": getattr(args, 'num_samples', None),
+        }
+        
+        # Write to temporary file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump(generation_settings, f, indent=2)
+            temp_file_path = f.name
+        
+        try:
+            # Upload metadata file to dataset repository
+            metadata_path = f"{dataset_name}/generation_settings.json"
+            print(f"[DEBUG] Uploading metadata file to {metadata_path}...")
+            api.upload_file(
+                path_or_fileobj=temp_file_path,
+                path_in_repo=metadata_path,
+                repo_id=args.hf_repo,
+                repo_type="dataset",
+                token=api_token
+            )
+            print(f"[DEBUG] Metadata file uploaded successfully")
+        finally:
+            # Clean up temporary file
+            os.unlink(temp_file_path)
+        
         print(f"Dataset successfully uploaded to: https://huggingface.co/datasets/{args.hf_repo}/{dataset_name}")
+        print(f"Generation settings metadata available at: {metadata_path}")
         
     except Exception as e:
         print(f"[DEBUG] Exception caught in upload_to_huggingface")

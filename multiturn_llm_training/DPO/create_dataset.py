@@ -14,7 +14,6 @@ from multiturn_llm_training.utils.create_offline_dataset import (
     ComparisonResult,
     GenerationResult,
     Sample,
-    BackupSample,
     setup_environment,
     calculate_rewards,
     compare_rewards,
