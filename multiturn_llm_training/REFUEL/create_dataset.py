@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""DPO dataset creation script."""
+"""REFUEL dataset creation script."""
 import sys 
 import os 
 import argparse
@@ -15,6 +15,7 @@ from multiturn_llm_training.utils.create_offline_dataset import (
     GenerationResult,
     Sample,
     BackupSample,
+    sample_geometric_bounded,
     setup_environment,
     calculate_rewards,
     compare_rewards,
@@ -25,17 +26,28 @@ from multiturn_llm_training.utils.create_offline_dataset import (
 
 
 # ============================================================================
-# DPO-Specific Functions
+# REFUEL-Specific Functions
 # ============================================================================
 
 def generate_conversations(vllm_client: VLLMClient, item: Dict[str, Any], args, is_starting_agent: bool) -> GenerationResult:
-    """Generate conversations using the VLLM client (DPO: sampled_h=None)."""
+    """Generate conversations using the VLLM client (REFUEL: samples sampled_h)."""
     prompt = item["prompt"]
     prompt_2 = item.get("prompt_2")
     
+    # REFUEL-specific: sample h from geometric distribution
+    # If sampled_h is already stored in item (from a previous retry), reuse it
+    if "_sampled_h" in item:
+        sampled_h = item["_sampled_h"]
+    else:
+        sampled_h = sample_geometric_bounded(p=0.3, max_value=4)
+        item["_sampled_h"] = sampled_h  # Store for retries
+    
     prompts = [prompt, prompt]
+    print(f"Prompts: {prompts}")
     prompts_2 = [prompt_2, prompt_2] if prompt_2 else None
+    print(f"Prompts 2: {prompts_2}")
 
+    
     client_response = vllm_client.generate(
         prompts=prompts,
         prompts_2=prompts_2,
@@ -45,7 +57,7 @@ def generate_conversations(vllm_client: VLLMClient, item: Dict[str, Any], args, 
         top_k=args.top_k if hasattr(args, 'top_k') else 50,
         max_tokens=args.max_tokens if hasattr(args, 'max_tokens') else 200,
         starting_agent=is_starting_agent,
-        sampled_h=None  # DPO doesn't use sampled_h
+        sampled_h=sampled_h  # REFUEL: use sampled h
     )
     
     return GenerationResult(
@@ -53,7 +65,7 @@ def generate_conversations(vllm_client: VLLMClient, item: Dict[str, Any], args, 
         token_ids=client_response["token_ids"],
         assistant_masks=client_response["assistant_masks"],
         generated_tokens=client_response["generated_tokens"],
-        sampled_h=None  # DPO: no sampled_h
+        sampled_h=sampled_h  # REFUEL: store sampled_h
     )
 
 
@@ -110,10 +122,13 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="DPO dataset creation script")
+    parser = argparse.ArgumentParser(description="REFUEL dataset creation script")
     parser.add_argument("--model", type=str, required=True, help="Model to evaluate")
     parser.add_argument("--num-samples", type=int, default=50, help="Number of samples to evaluate")
     parser.add_argument("--game-type", type=str, default="generic-rental-agreement", help="Type of game to evaluate")
+    parser.add_argument("--top-p", type=float, default=1.0, help="Top-p sampling parameter")
+    parser.add_argument("--top-k", type=int, default=50, help="Top-k sampling parameter")
+    parser.add_argument("--max-tokens", type=int, default=200, help="Maximum number of tokens to generate")
     parser.add_argument("--hf-repo", type=str, help="Hugging Face repository ID to upload the dataset")
     args = parser.parse_args()
     main(args)
