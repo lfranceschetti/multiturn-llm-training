@@ -84,8 +84,8 @@ def get_conversation_data(dataset, index):
         "reject": row.get("reject", None),
         "chosen_reward": row.get("chosen_reward", None),
         "reject_reward": row.get("reject_reward", None),
-        "chosen_generated_tokens": row.get("chosen_generated_tokens", None),
-        "reject_generated_tokens": row.get("reject_generated_tokens", None),
+        "generated_tokens_agent": row.get("generated_tokens_agent", None),
+        "generated_tokens_opp": row.get("generated_tokens_opp", None),
     }
 
 # Load dataset
@@ -242,25 +242,27 @@ if data:
     st.write("---")
     col1, col2 = st.columns(2)
 
+    # Display token info at sample level (applies to both chosen and rejected)
+    if data.get("generated_tokens_agent") is not None or data.get("generated_tokens_opp") is not None:
+        base_tokens = data.get("generated_tokens_agent", 0)
+        opp_tokens = data.get("generated_tokens_opp", 0)
+        st.write(f"**Generated Tokens - Base:** {base_tokens} | **Opp:** {opp_tokens}")
+
     with col1:
         st.subheader("Chosen (Better)")
         
-        # Display reward and token info
+        # Display reward info
         if data.get("chosen_reward") is not None:
             st.write(f"**Reward:** {data['chosen_reward']:.4f}")
-        if data.get("chosen_generated_tokens") is not None:
-            st.write(f"**Generated Tokens:** {data['chosen_generated_tokens']}")
         
         display_messages(chosen_conv, sampled_h=None, is_chosen=True)
 
     with col2:
         st.subheader("Reject (Worse)")
         
-        # Display reward and token info
+        # Display reward info
         if data.get("reject_reward") is not None:
             st.write(f"**Reward:** {data['reject_reward']:.4f}")
-        if data.get("reject_generated_tokens") is not None:
-            st.write(f"**Generated Tokens:** {data['reject_generated_tokens']}")
 
         
         display_messages(reject_conv, sampled_h=data.get("sampled_h"), is_chosen=False)

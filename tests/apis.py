@@ -36,7 +36,7 @@ def test_conversation(api0_url, api1_url):
                 "prompts": convos,
                 "prompts_2": convos,
                 "temperature": 0.7,
-                "max_tokens": 100
+                "max_completion_length": 100
             }
         )
         

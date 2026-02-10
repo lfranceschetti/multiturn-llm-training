@@ -78,6 +78,10 @@ class NegotiationEnv:
             }
 
             games_config = self.add_game_info_to_game_config(games_config)
+            game_info = games_config.pop("game_info")  # Extract and remove game_info
+            
+            # Merge game_info back into games_config so it's saved with the sample
+            games_config.update(game_info)
 
             game = Game(**games_config)
             

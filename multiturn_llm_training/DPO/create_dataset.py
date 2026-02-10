@@ -3,6 +3,7 @@
 import sys 
 import os 
 import argparse
+import time
 from typing import List, Dict, Any
 
 notebook_dir = os.getcwd() 
@@ -11,16 +12,16 @@ from trl.extras.vllm_client import VLLMClient
 
 from multiturn_llm_training.utils.create_offline_dataset import (
     ProcessingConfig,
-    ComparisonResult,
     GenerationResult,
     Sample,
     setup_environment,
     calculate_rewards,
-    compare_rewards,
     upload_to_huggingface,
     convert_to_dict_format,
     process_dataset
 )
+
+N=8
 
 
 # ============================================================================
@@ -32,17 +33,17 @@ def generate_conversations(vllm_client: VLLMClient, item: Dict[str, Any], args, 
     prompt = item["prompt"]
     prompt_2 = item.get("prompt_2")
     
-    prompts = [prompt, prompt]
-    prompts_2 = [prompt_2, prompt_2] if prompt_2 else None
+
+    # repeat the prompt N times
+    prompts = [prompt] * N
+    prompts_2 = [prompt_2] * N if prompt_2 else None
 
     client_response = vllm_client.generate(
         prompts=prompts,
         prompts_2=prompts_2,
-        n=1,
-        temperature=1.0,
         top_p=args.top_p if hasattr(args, 'top_p') else 1.0,
         top_k=args.top_k if hasattr(args, 'top_k') else 50,
-        max_tokens=args.max_tokens if hasattr(args, 'max_tokens') else 200,
+        max_completion_length=args.max_tokens if hasattr(args, 'max_tokens') else 200,
         starting_agent=is_starting_agent,
         sampled_h=None  # DPO doesn't use sampled_h
     )
@@ -51,7 +52,8 @@ def generate_conversations(vllm_client: VLLMClient, item: Dict[str, Any], args, 
         conversations=client_response["conversations"],
         token_ids=client_response["token_ids"],
         assistant_masks=client_response["assistant_masks"],
-        generated_tokens=client_response["generated_tokens"],
+        generated_tokens_agent=client_response["generated_tokens_agent"],
+        generated_tokens_opp=client_response["generated_tokens_opp"],
         sampled_h=None  # DPO: no sampled_h
     )
 
@@ -62,6 +64,7 @@ def generate_conversations(vllm_client: VLLMClient, item: Dict[str, Any], args, 
 
 def main(args):
     """Main function that executes the program logic."""
+    start_time = time.perf_counter()
     print(f"Running with the following arguments:")
     for arg, value in vars(args).items():
         print(f"  {arg}: {value}")
@@ -80,31 +83,41 @@ def main(args):
     
     # Process datasets
     print("\nProcessing starting agent dataset...")
-    starting_agent_samples = process_dataset(
+    starting_agent_samples, starting_agent_discarded_samples = process_dataset(
         dataset_starting_agent, vllm_client, reward_functions, args, True, config, generate_conversations
     )
 
     print("\nProcessing responder dataset...")
-    responder_samples = process_dataset(
+    responder_samples, responder_discarded_samples = process_dataset(
         dataset_responder, vllm_client, reward_functions, args, False, config, generate_conversations
     )
     
     # Combine results
     all_samples = starting_agent_samples + responder_samples
-    
+    all_discarded_samples = starting_agent_discarded_samples + responder_discarded_samples
     # Calculate total tokens from samples
-    total_token_count = sum(s.chosen_generated_tokens + s.reject_generated_tokens for s in all_samples)
+    total_token_count = sum(s.generated_tokens_agent + s.generated_tokens_opp for s in all_samples)
     print(f"\nGeneration complete. Total samples: {len(all_samples)}")
     print(f"Total token count: {total_token_count}")
+    
+    # Calculate execution time before upload
+    end_time = time.perf_counter()
+    elapsed_time = end_time - start_time
+    args.elapsed_time_seconds = elapsed_time  # Store in args for metadata upload
+    print(f"\n{'='*60}")
+    print(f"Total execution time: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+    print(f"{'='*60}")
     
     # Convert and save
     print(f"\nConverting {len(all_samples)} samples to dictionary format...")
     dict_to_save = convert_to_dict_format(all_samples, args)
+    dict_to_save_discarded = convert_to_dict_format(all_discarded_samples, args)
     print(f"Dictionary created with keys: {list(dict_to_save.keys())}")
     print(f"Dictionary values lengths: {[(k, len(v) if isinstance(v, list) else 'N/A') for k, v in dict_to_save.items()]}")
     print(f"\nAttempting to upload to Hugging Face...")
     print(f"HF_REPO argument: {args.hf_repo}")
-    upload_to_huggingface(dict_to_save, args)
+    upload_to_huggingface(dict_to_save, args)  # uploads to "train" split
+    upload_to_huggingface(dict_to_save_discarded, args, split="discarded")
     print("Upload function completed.")
 
 

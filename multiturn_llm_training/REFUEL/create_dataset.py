@@ -3,6 +3,7 @@
 import sys 
 import os 
 import argparse
+import time
 from typing import List, Dict, Any
 
 notebook_dir = os.getcwd() 
@@ -11,13 +12,11 @@ from trl.extras.vllm_client import VLLMClient
 
 from multiturn_llm_training.utils.create_offline_dataset import (
     ProcessingConfig,
-    ComparisonResult,
     GenerationResult,
     Sample,
     sample_geometric_bounded,
     setup_environment,
     calculate_rewards,
-    compare_rewards,
     upload_to_huggingface,
     convert_to_dict_format,
     process_dataset
@@ -32,29 +31,19 @@ def generate_conversations(vllm_client: VLLMClient, item: Dict[str, Any], args, 
     """Generate conversations using the VLLM client (REFUEL: samples sampled_h)."""
     prompt = item["prompt"]
     prompt_2 = item.get("prompt_2")
-    
-    # REFUEL-specific: sample h from geometric distribution
-    # If sampled_h is already stored in item (from a previous retry), reuse it
-    if "_sampled_h" in item:
-        sampled_h = item["_sampled_h"]
-    else:
-        sampled_h = sample_geometric_bounded(p=0.3, max_value=4)
-        item["_sampled_h"] = sampled_h  # Store for retries
+
+    sampled_h = sample_geometric_bounded(p=0.3, max_value=4)
     
     prompts = [prompt, prompt]
-    print(f"Prompts: {prompts}")
     prompts_2 = [prompt_2, prompt_2] if prompt_2 else None
-    print(f"Prompts 2: {prompts_2}")
 
     
     client_response = vllm_client.generate(
         prompts=prompts,
         prompts_2=prompts_2,
-        n=1,
-        temperature=1.0,
         top_p=args.top_p if hasattr(args, 'top_p') else 1.0,
         top_k=args.top_k if hasattr(args, 'top_k') else 50,
-        max_tokens=args.max_tokens if hasattr(args, 'max_tokens') else 200,
+        max_completion_length=args.max_tokens if hasattr(args, 'max_tokens') else 200,
         starting_agent=is_starting_agent,
         sampled_h=sampled_h  # REFUEL: use sampled h
     )
@@ -63,7 +52,8 @@ def generate_conversations(vllm_client: VLLMClient, item: Dict[str, Any], args, 
         conversations=client_response["conversations"],
         token_ids=client_response["token_ids"],
         assistant_masks=client_response["assistant_masks"],
-        generated_tokens=client_response["generated_tokens"],
+        generated_tokens_agent=client_response["generated_tokens_agent"],
+        generated_tokens_opp=client_response["generated_tokens_opp"],
         sampled_h=sampled_h  # REFUEL: store sampled_h
     )
 
@@ -74,6 +64,7 @@ def generate_conversations(vllm_client: VLLMClient, item: Dict[str, Any], args, 
 
 def main(args):
     """Main function that executes the program logic."""
+    start_time = time.perf_counter()
     print(f"Running with the following arguments:")
     for arg, value in vars(args).items():
         print(f"  {arg}: {value}")
@@ -92,12 +83,12 @@ def main(args):
     
     # Process datasets
     print("\nProcessing starting agent dataset...")
-    starting_agent_samples = process_dataset(
+    starting_agent_samples, starting_agent_discarded_samples = process_dataset(
         dataset_starting_agent, vllm_client, reward_functions, args, True, config, generate_conversations
     )
 
     print("\nProcessing responder dataset...")
-    responder_samples = process_dataset(
+    responder_samples, responder_discarded_samples = process_dataset(
         dataset_responder, vllm_client, reward_functions, args, False, config, generate_conversations
     )
     
@@ -105,9 +96,17 @@ def main(args):
     all_samples = starting_agent_samples + responder_samples
     
     # Calculate total tokens from samples
-    total_token_count = sum(s.chosen_generated_tokens + s.reject_generated_tokens for s in all_samples)
+    total_token_count = sum(s.generated_tokens_agent + s.generated_tokens_opp for s in all_samples)
     print(f"\nGeneration complete. Total samples: {len(all_samples)}")
     print(f"Total token count: {total_token_count}")
+    
+    # Calculate execution time before upload
+    end_time = time.perf_counter()
+    elapsed_time = end_time - start_time
+    args.elapsed_time_seconds = elapsed_time  # Store in args for metadata upload
+    print(f"\n{'='*60}")
+    print(f"Total execution time: {elapsed_time:.2f} seconds ({elapsed_time/60:.2f} minutes)")
+    print(f"{'='*60}")
     
     # Convert and save
     print(f"\nConverting {len(all_samples)} samples to dictionary format...")

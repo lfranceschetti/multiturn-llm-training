@@ -154,7 +154,7 @@ def main(args):
             temperature=1.0,
             top_p=args.top_p if hasattr(args, 'top_p') else 1.0,
             top_k=args.top_k if hasattr(args, 'top_k') else 50,
-            max_tokens=args.max_tokens if hasattr(args, 'max_tokens') else 200,
+            max_completion_length=args.max_tokens if hasattr(args, 'max_tokens') else 200,
             starting_agent=is_starting_agent,
             sampled_h=sampled_h
         )
