@@ -285,6 +285,7 @@ class NegotiationEnv:
         """
         Set the seed for reproducibility across random, numpy, and PyTorch.
         """
+        random.seed(seed)  # Python built-in random
         np.random.seed(seed)  # NumPy
         torch.manual_seed(seed)  # PyTorch CPU
         if torch.cuda.is_available():

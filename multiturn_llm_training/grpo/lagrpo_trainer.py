@@ -59,9 +59,19 @@ if is_wandb_available():
 RewardFunc = Union[str, PreTrainedModel, Callable[[list, list], list[float]]]
 
 
-def sample_geometric_bounded(p, max_value):
+def sample_geometric_bounded(p, max_value, rng=None):
+    """Sample from a geometric distribution bounded by max_value.
+    
+    Args:
+        p: Success probability for the geometric distribution.
+        max_value: Maximum allowed value (inclusive).
+        rng: Optional np.random.Generator for reproducibility. Falls back to global np.random if None.
+    """
     while True:
-        sample = np.random.geometric(p) - 1
+        if rng is not None:
+            sample = rng.geometric(p) - 1
+        else:
+            sample = np.random.geometric(p) - 1
         if sample <= max_value:
             return sample
 
@@ -90,6 +100,8 @@ class LAGRPOTrainer(GRPOTrainer):
 
         self.turn_level_sampling = turn_level_sampling
         self._total_train_tokens = 0
+        # Dedicated RNG for deterministic turn-level sampling (independent of global numpy state)
+        self._turn_rng = np.random.default_rng(seed=args.seed if args is not None else 42)
 
         super().__init__(
             model=model,
@@ -204,10 +216,13 @@ class LAGRPOTrainer(GRPOTrainer):
                 print(f"[Rank {rank}] Sampling turn number for {mode} set")
                 if mode == "train":
                     #For now the number of conversation turns is fixed to 5 -> h ~ {0, 1, 2, 3, 4}
-                    sampled_h = sample_geometric_bounded(p=0.3, max_value=4)
+                    sampled_h = sample_geometric_bounded(p=0.3, max_value=4, rng=self._turn_rng)
                     print(f"[Rank {rank}] Sampled turn number: {sampled_h}")
 
             # ordered_set_of_prompts = all_prompts_text[:: self.num_generations]
+
+            # Compute a deterministic seed for vLLM generation based on the training seed and current step
+            vllm_seed = self.args.seed + self.state.global_step
 
             with profiling_context(self, "vLLM.generate"):
                 for attempt in range(5):
@@ -230,7 +245,8 @@ class LAGRPOTrainer(GRPOTrainer):
                             max_completion_length=self.max_completion_length,
                             guided_decoding_regex=self.guided_decoding_regex,
                             starting_agent=starting_agent,
-                            sampled_h=sampled_h
+                            sampled_h=sampled_h,
+                            seed=vllm_seed,
                         )
                         break
                     except Exception as e:

@@ -3,6 +3,7 @@ import os
 import json 
 import argparse
 from envs.negotiation.env import NegotiationEnv 
+from envs.test.env import TestEnv
 from multiturn_llm_training.grpo.lagrpo_trainer import LAGRPOTrainer
 from trl import GRPOConfig
 import hydra
@@ -20,54 +21,24 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 #Current training settings are following the following tutorial:
 #http://github.com/huggingface/peft/blob/main/examples/sft/utils.py
 
-def get_test_reward_functions():
-    """
-    Returns a list of reward functions to be used by the GRPO trainer.
-    """
-    
-    def test_reward_len(completions,**kwargs):
-        return [-abs(20 - len(completion)) for completion in completions]
-
-    
-    return [test_reward_len]
-
-def get_test_datasets(train_size, eval_size):
-    """
-    Returns a train and eval dataset to be used by the GRPO trainer.
-    """
-    prompt = "Please generate a random number between 0 and 100. Only respond with the number, nothing else."
-    prompt_2 = "Please generate a random number between 0 and 100. Only respond with the number, nothing else."
-    game_config = { }
-    train_samples = []
-    eval_samples = []
-    for _ in range(train_size):
-        train_samples.append({
-            "prompt": prompt,
-            "prompt_2": prompt_2,
-            "game_config": game_config
-        })
-    for _ in range(eval_size):
-        eval_samples.append({
-            "prompt": prompt,
-            "prompt_2": prompt_2,
-            "game_config": game_config
-        })
-    train_dataset = Dataset.from_list(train_samples)
-    eval_dataset = Dataset.from_list(eval_samples)  
-    return train_dataset, eval_dataset
-
 def main(args):
 
     print("Training Args:\n", args)
 
+    # Ensure deterministic behaviour across runs
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.use_deterministic_algorithms(True, warn_only=True)
 
     os.makedirs(f"{args.output_dir}/{args.run_name}", exist_ok=True)
 
 
     if args.test_env:
-        reward_functions = get_test_reward_functions()
-        train_dataset, eval_dataset = get_test_datasets(args.train_size, args.eval_size)
-        print("Test datasets created")
+        test_env = TestEnv()
+        reward_functions = test_env.get_reward_functions()
+        train_dataset = test_env.create_dataset(size=args.train_size)
+        eval_dataset = test_env.create_dataset(size=args.eval_size)
+        print("Test environment created")
     else:
         negotiation_env = NegotiationEnv(game_type="multi-game")
         print("Negotiation Environment created")
@@ -176,8 +147,8 @@ if __name__ == "__main__":
     parser.add_argument("--model-name", type=str, default="meta-llama/Llama-3.1-8B-Instruct")
     parser.add_argument("--run-name", type=str, default="grpo_test_1")
     parser.add_argument("--output-dir", type=str, default=os.path.join(os.path.dirname(__file__), "..", "..", "output"))
-    parser.add_argument("--quantized", type=bool, default=False)
-    parser.add_argument("--test-env", type=bool, default=False)
+    parser.add_argument("--quantized", action="store_true", default=False)
+    parser.add_argument("--test-env", action="store_true", default=False)
 
     args = parser.parse_args()
     
