@@ -6,8 +6,6 @@ import argparse
 import time
 from typing import List, Dict, Any
 
-notebook_dir = os.getcwd() 
-sys.path.append(os.path.abspath(os.path.join(notebook_dir, '..', '..', 'llm-negotiations')))
 from trl.extras.vllm_client import VLLMClient
 
 from multiturn_llm_training.utils.create_offline_dataset import (

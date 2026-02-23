@@ -238,6 +238,12 @@ class NegotiationEnv:
                     get_payoffs=True
                 )
 
+                if evaluation is None:
+                    print(f"Warning: Evaluation returned None for sample {i}, assigning reward 0.0")
+                    rewards.append(0.0)
+                    if get_full_info:
+                        evaluations.append(None)
+                    continue
                     
                 if negotiation_roles is None or not isinstance(negotiation_roles, list) or len(negotiation_roles) == 0:
                     negotiation_roles = [1] * len(completions)

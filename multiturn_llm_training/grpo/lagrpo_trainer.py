@@ -14,6 +14,7 @@ from transformers import (
 from transformers.utils import is_peft_available
 
 
+
 from pathlib import Path
 import sys
 import os
@@ -45,8 +46,7 @@ from trl.trainer.utils import (
 )
 
 
-from .environment import Environment
-from .GRPOEnvLogger import print_prompt_completions_sample
+from multiturn_llm_training.grpo.logger_env import print_prompt_completions_sample
 import numpy as np
 
 
@@ -252,20 +252,23 @@ class LAGRPOTrainer(GRPOTrainer):
             token_ids_list = client_response["token_ids"]
             attention_mask_list = client_response["attention_masks"]
             assistant_mask_list = client_response["assistant_masks"]
-            total_token_count = client_response["total_token_count"][0]
+            generated_tokens_agent = client_response["generated_tokens_agent"]
+            generated_tokens_opp = client_response["generated_tokens_opp"]
         else:
             full_conversations = [None] * len(all_prompts_text)
             token_ids_list = [None] * len(all_prompts_text)
             attention_mask_list = [None] * len(all_prompts_text)
             assistant_mask_list = [None] * len(all_prompts_text)
-            total_token_count = 0
+            generated_tokens_agent = [0] * len(all_prompts_text)
+            generated_tokens_opp = [0] * len(all_prompts_text)
 
 
         full_conversations = broadcast_object_list(full_conversations, from_process=0)
         token_ids_list = broadcast_object_list(token_ids_list, from_process=0)
         attention_mask_list = broadcast_object_list(attention_mask_list, from_process=0)
         assistant_mask_list = broadcast_object_list(assistant_mask_list, from_process=0)
-        #Total token count is a number that needs to be summed up across all processes
+        generated_tokens_agent = broadcast_object_list(generated_tokens_agent, from_process=0)
+        generated_tokens_opp = broadcast_object_list(generated_tokens_opp, from_process=0)
 
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
@@ -359,12 +362,16 @@ class LAGRPOTrainer(GRPOTrainer):
         completion_length = self.accelerator.gather_for_metrics(assistant_mask.sum(1)).float().mean().item() # type: ignore
         self._metrics[mode]["completion_length"].append(completion_length)
 
-        # Add tracking for total tokens and assistant tokens
-        total_token_count = torch.tensor(total_token_count, device=device)
+        # Add tracking for total tokens (agent + opponent) and per-role tokens
+        total_agent_tokens = torch.tensor(sum(generated_tokens_agent), device=device)
+        total_opp_tokens = torch.tensor(sum(generated_tokens_opp), device=device)
+        total_token_count = total_agent_tokens + total_opp_tokens
         if mode == "train":
             print(f"Total train tokens: {self._total_train_tokens}")
             self._total_train_tokens += self.accelerator.gather_for_metrics(total_token_count).sum().item()
             self._metrics[mode]["train_tokens"].append(self._total_train_tokens)
+            self._metrics[mode]["agent_tokens"].append(self.accelerator.gather_for_metrics(total_agent_tokens).sum().item())
+            self._metrics[mode]["opp_tokens"].append(self.accelerator.gather_for_metrics(total_opp_tokens).sum().item())
 
         reward_per_func = rewards_per_func.mean(0) # type: ignore
         for i, reward_func in enumerate(self.reward_funcs):
