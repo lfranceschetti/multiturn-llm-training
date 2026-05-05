@@ -22,7 +22,7 @@ class OpenAIModel(ChatModel):
         """
         super().__attrs_post_init__()  # Ensures the parent logic is executed first
         
-        self.model = OpenAI(api_key=self.model_key)
+        self.model = OpenAI(api_key=self.model_key, timeout=60.0, max_retries=3)
     
     # @retry(Exception, tries=2, delay=2, backoff=2)
     def _generate(self, data):

@@ -22,6 +22,7 @@ set -e
 
 cd "$(dirname "$0")/.."
 mkdir -p eval_logs
+export PYTHONUNBUFFERED=1
 
 echo "=== Launching v2 eval across 3 GPUs ==="
 date
