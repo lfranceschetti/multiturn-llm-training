@@ -140,14 +140,23 @@ def play_negotiation(model, tokenizer, prompt_agent, prompt_opponent,
 
 def evaluate_checkpoint(model, tokenizer, has_lora, env, num_games,
                         max_rounds=5, temperature=1.0, seed=42, repetitions=1,
-                        opponent_persona="cooperative"):
+                        opponent_persona="cooperative", sample_start_idx=0):
     """Run negotiations and evaluate with GPT-4o-mini.
 
-    Each game configuration is played `repetitions` times with different seeds
-    to get statistically meaningful results.
+    Iterates over a slice of the curated eval dataset's *flat sample list*. The
+    flat list has two samples per scenario (role 1 + role 2), so for the
+    multi-game eval set with 14 scenarios there are 28 samples (indices 0..27).
+    sample_start_idx lets you eval a contiguous slice (e.g. samples 10..15)
+    so a previous run on samples 0..9 can be extended without re-rolling those.
     """
     eval_dataset = env.create_eval_dataset()
-    n_configs = min(num_games, len(eval_dataset))
+    end_idx = min(sample_start_idx + num_games, len(eval_dataset))
+    n_samples = end_idx - sample_start_idx
+    if n_samples <= 0:
+        raise ValueError(
+            f"Empty sample slice: start={sample_start_idx}, num_games={num_games}, "
+            f"dataset size={len(eval_dataset)}"
+        )
 
     all_results = []
     all_U_A, all_U_B = [], []
@@ -157,9 +166,9 @@ def evaluate_checkpoint(model, tokenizer, has_lora, env, num_games,
                                            "ratio_welfare": [], "ratio_nash": [],
                                            "ratio_rcoop": [], "agreed": []})
 
-    total = n_configs * repetitions
-    print(f"\nPlaying {total} negotiations ({n_configs} configs x {repetitions} reps, "
-          f"max {max_rounds} rounds each)...")
+    total = n_samples * repetitions
+    print(f"\nPlaying {total} negotiations ({n_samples} samples x {repetitions} reps, "
+          f"sample indices {sample_start_idx}..{end_idx - 1}, max {max_rounds} rounds each)...")
 
     game_counter = 0
     for rep in range(repetitions):
@@ -167,7 +176,7 @@ def evaluate_checkpoint(model, tokenizer, has_lora, env, num_games,
         torch.manual_seed(rep_seed)
         np.random.seed(rep_seed)
 
-        for i in range(n_configs):
+        for i in range(sample_start_idx, end_idx):
             sample = eval_dataset[i]
             prompt_agent = sample["prompt"]
             prompt_opponent = apply_persona(sample["prompt_2"], opponent_persona)
@@ -259,7 +268,14 @@ def evaluate_checkpoint(model, tokenizer, has_lora, env, num_games,
     agreements = sum(all_agreed)
     metrics = {
         "n_games": total,
-        "n_configs": n_configs,
+        # NOTE: "n_configs" is preserved for backward compatibility with the
+        # original v2 JSONs but is actually the number of *samples* in the slice
+        # (each scenario contributes 2 samples, role-1 + role-2). Use n_samples
+        # for the unambiguous reading.
+        "n_configs": n_samples,
+        "n_samples": n_samples,
+        "sample_start_idx": sample_start_idx,
+        "sample_end_idx": end_idx - 1,
         "repetitions": repetitions,
         "agreement_rate": agreements / n,
         "U_A_mean": mean([float(x) for x in all_U_A]),
@@ -314,6 +330,13 @@ def main():
     parser.add_argument("--game-type", type=str, default="multi-game")
     parser.add_argument("--num-games", type=int, default=10,
                         help="Number of game configs to use (max = eval dataset size)")
+    parser.add_argument("--sample-start-idx", "--config-start-idx",
+                        dest="sample_start_idx", type=int, default=0,
+                        help="Index of first SAMPLE in the curated flat dataset (default 0). "
+                             "The flat dataset has 2 samples per scenario (role 1 + role 2), so "
+                             "for the multi-game set there are 28 samples (0..27) covering 14 "
+                             "scenarios. Use --sample-start-idx 10 --num-games 6 to evaluate "
+                             "samples 10..15 (= scenarios 6,7,8 in both roles).")
     parser.add_argument("--repetitions", type=int, default=1,
                         help="Times to repeat each game config (different seeds for statistical significance)")
     parser.add_argument("--max-rounds", type=int, default=5)
@@ -372,6 +395,7 @@ def main():
             seed=args.seed,
             repetitions=args.repetitions,
             opponent_persona=args.opponent_persona,
+            sample_start_idx=args.sample_start_idx,
         )
 
         # Print summary
@@ -386,8 +410,13 @@ def main():
         if "agreed_ratio_rcoop_mean" in metrics:
             print(f"  Agreed ratio R_coop:{metrics['agreed_ratio_rcoop_mean']:.3f}")
 
-        # Save JSON (tagged with persona so runs don't overwrite each other)
+        # Save JSON (tagged with persona + slice so runs don't overwrite each other).
+        # Slice tag uses sample-index range (0..27), NOT scenario-index range (1..14).
+        # For multi-game: samples 10..15 == scenarios 6,7,8 in both roles.
         suffix = f"_{args.opponent_persona}" if args.opponent_persona != "cooperative" else ""
+        if args.sample_start_idx != 0:
+            end = args.sample_start_idx + args.num_games - 1
+            suffix += f"_samples{args.sample_start_idx}-{end}"
         output_path = os.path.join(args.output_dir, f"{name}{suffix}.json")
         with open(output_path, "w") as f:
             json.dump({"args": vars(args), "metrics": metrics, "games": results},
